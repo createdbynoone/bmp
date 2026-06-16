@@ -5,6 +5,7 @@ import { HiggsfieldButton } from './components/HiggsfieldButton'
 
 type GenerateStatus = 'idle' | 'loading' | 'done' | 'error'
 type FireStatus = 'idle' | 'loading' | 'done' | 'error'
+type AspectRatio = '9:16' | '4:5' | '1:1'
 
 export default function App() {
   const [refs, setRefs] = useState<string[]>([])
@@ -15,12 +16,27 @@ export default function App() {
   const [fireStatus, setFireStatus] = useState<FireStatus>('idle')
   const [fireProgress, setFireProgress] = useState<string[]>([])
   const [error, setError] = useState('')
+  const [aspectRatio, setAspectRatio] = useState<AspectRatio>('4:5')
+  const [showLoginModal, setShowLoginModal] = useState(false)
+  const [memoryId, setMemoryId] = useState<string | null>(null)
+  const [memoryStats, setMemoryStats] = useState<{ total: number; fired: number } | null>(null)
 
   useEffect(() => {
+    if (!window.bmp) return
     const cleanup = window.bmp.onHiggsfieldProgress((line) => {
       setFireProgress((prev) => [...prev, line])
     })
     return cleanup
+  }, [])
+
+  useEffect(() => {
+    window.bmp?.checkHiggsfieldAuth?.().then((res: { authenticated: boolean }) => {
+      if (!res.authenticated) {
+        setShowLoginModal(true)
+        window.bmp?.higgsfieldLogin?.()
+      }
+    })
+    window.bmp?.getMemoryStats?.().then((s: { total: number; fired: number }) => setMemoryStats(s))
   }, [])
 
   const canGenerate = refs.length > 0 && products.length > 0 && description.trim().length > 0
@@ -35,8 +51,10 @@ export default function App() {
 
     try {
       const result = await window.bmp.generatePrompt({ refs, products, description })
-      setPrompt(result)
+      setPrompt(result.prompt)
+      setMemoryId(result.memoryId)
       setGenerateStatus('done')
+      window.bmp?.getMemoryStats?.().then((s: { total: number; fired: number }) => setMemoryStats(s))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Generation failed')
       setGenerateStatus('error')
@@ -49,12 +67,25 @@ export default function App() {
     setFireProgress([])
 
     try {
-      const result = await window.bmp.fireHighsfield({ prompt })
-      setFireStatus(result.success ? 'done' : 'error')
+      const result = await window.bmp.fireHighsfield({ prompt, aspectRatio, products })
+      if (result.success) {
+        setFireStatus('done')
+        if (memoryId) {
+          window.bmp?.markPromptFired?.({ id: memoryId, aspectRatio })
+          window.bmp?.getMemoryStats?.().then((s: { total: number; fired: number }) => setMemoryStats(s))
+        }
+      } else {
+        setFireStatus('error')
+      }
     } catch (err) {
       setFireStatus('error')
       setFireProgress((prev) => [...prev, err instanceof Error ? err.message : 'Unknown error'])
     }
+  }
+
+  const handleLogin = async () => {
+    await window.bmp?.higgsfieldLogin?.()
+    setShowLoginModal(false)
   }
 
   const reset = () => {
@@ -66,6 +97,7 @@ export default function App() {
     setFireStatus('idle')
     setFireProgress([])
     setError('')
+    setMemoryId(null)
   }
 
   return (
@@ -91,7 +123,7 @@ export default function App() {
       {/* Divider */}
       <div className="h-px bg-border flex-shrink-0" />
 
-      {/* Main content */}
+      {/* Main content — scrollable */}
       <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
 
         {/* Drop zones */}
@@ -100,23 +132,13 @@ export default function App() {
             <label className="text-[10px] font-heading font-semibold uppercase tracking-widest text-text-secondary">
               References <span className="text-text-muted">(composition / mood)</span>
             </label>
-            <DropZone
-              label="+ Add refs"
-              multiple
-              files={refs}
-              onFiles={setRefs}
-            />
+            <DropZone label="+ Add refs" multiple files={refs} onFiles={setRefs} />
           </div>
           <div className="bg-surface border border-border rounded-lg p-3 flex flex-col gap-2">
             <label className="text-[10px] font-heading font-semibold uppercase tracking-widest text-text-secondary">
               Product <span className="text-text-muted">(Brotherhood garment)</span>
             </label>
-            <DropZone
-              label="+ Add product"
-              multiple
-              files={products}
-              onFiles={setProducts}
-            />
+            <DropZone label="+ Add product" multiple files={products} onFiles={setProducts} />
           </div>
         </div>
 
@@ -167,35 +189,64 @@ export default function App() {
         )}
 
         {/* Prompt output */}
-        {prompt && (
-          <>
-            <PromptOutput prompt={prompt} />
-            <HiggsfieldButton
-              status={fireStatus}
-              progress={fireProgress}
-              onClick={handleFire}
-              disabled={!prompt}
-            />
-          </>
-        )}
+        {prompt && <PromptOutput prompt={prompt} />}
 
         {/* Empty state hint */}
         {!prompt && generateStatus === 'idle' && (
           <div className="flex-1 flex items-center justify-center py-6">
-            <div className="text-center">
-              <p className="text-[10px] text-text-muted uppercase tracking-[0.2em] font-heading">
-                Drop refs + product · Write brief · Generate
-              </p>
-            </div>
+            <p className="text-[10px] text-text-muted uppercase tracking-[0.2em] font-heading">
+              Drop refs + product · Write brief · Generate
+            </p>
           </div>
         )}
       </div>
 
+      {/* Higgsfield bar — always visible at bottom */}
+      <div className="flex-shrink-0 border-t border-border px-4 py-3">
+        <HiggsfieldButton
+          status={fireStatus}
+          progress={fireProgress}
+          onClick={handleFire}
+          disabled={!prompt}
+          aspectRatio={aspectRatio}
+          onAspectRatio={setAspectRatio}
+        />
+      </div>
+
       {/* Footer */}
       <div className="flex-shrink-0 border-t border-border px-5 py-2 flex items-center justify-between">
-        <span className="text-[9px] text-text-muted font-mono tracking-widest uppercase">nano_banana_flash · 1k · 4:5</span>
-        <span className="text-[9px] text-text-muted font-mono">BMP v1.0</span>
+        <span className="text-[9px] text-text-muted font-mono tracking-widest uppercase">nano_banana_2 · 1k</span>
+        <div className="flex items-center gap-3">
+          {memoryStats && memoryStats.total > 0 && (
+            <span className="text-[9px] font-mono text-text-muted">
+              memory: {memoryStats.total} prompts · <span className="text-yellow-600/70">★ {memoryStats.fired} fired</span>
+            </span>
+          )}
+          <span className="text-[9px] text-text-muted font-mono">BMP v1.0</span>
+        </div>
       </div>
+
+      {/* Higgsfield login modal */}
+      {showLoginModal && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-surface border border-border rounded-xl p-6 w-80 flex flex-col gap-4">
+            <div className="flex flex-col gap-1">
+              <span className="font-heading font-bold text-text-primary text-sm uppercase tracking-widest">Higgsfield Auth</span>
+              <p className="text-xs text-text-secondary leading-relaxed">
+                Se abrió el navegador para iniciar sesión en Higgsfield. Completa el login y luego cierra este aviso.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowLoginModal(false)}
+                className="flex-1 py-2 rounded-lg bg-white text-black text-xs font-heading font-semibold uppercase tracking-widest hover:bg-white/90 transition-colors"
+              >
+                Listo, ya inicié sesión
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

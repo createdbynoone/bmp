@@ -61,9 +61,9 @@ export function DropZone({ label, multiple = false, files, onFiles }: DropZonePr
                 key={idx}
                 className="group relative flex items-center gap-1 bg-[#161616] border border-border rounded px-2 py-1"
               >
-                <div className="w-4 h-4 rounded overflow-hidden flex-shrink-0 bg-[#1e1e1e]">
+                <div className="w-6 h-6 rounded overflow-hidden flex-shrink-0 bg-[#1e1e1e]">
                   <img
-                    src={`file://${path}`}
+                    src={`localfile://${path}`}
                     alt=""
                     className="w-full h-full object-cover"
                     onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}

@@ -1,25 +1,120 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, nativeImage, protocol, net, dialog } from 'electron'
 import { join } from 'path'
-import { readFileSync, writeFileSync, mkdirSync } from 'fs'
-import { homedir, tmpdir } from 'os'
+import { readFileSync, writeFileSync, existsSync, createWriteStream } from 'fs'
+import { homedir } from 'os'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import https from 'https'
+import http from 'http'
 import Anthropic from '@anthropic-ai/sdk'
+import electronUpdater from 'electron-updater'
+const { autoUpdater } = electronUpdater
+
+// ─── Prompt Memory ────────────────────────────────────────────────────────────
+
+interface MemoryEntry {
+  id: string
+  timestamp: number
+  description: string
+  prompt: string
+  fired: boolean
+  aspectRatio?: string
+}
+
+interface Memory {
+  entries: MemoryEntry[]
+}
+
+function memoryPath(): string {
+  return join(app.getPath('userData'), 'bmp-memory.json')
+}
+
+function loadMemory(): Memory {
+  try {
+    const raw = readFileSync(memoryPath(), 'utf-8')
+    return JSON.parse(raw)
+  } catch {
+    return { entries: [] }
+  }
+}
+
+function saveMemory(memory: Memory) {
+  writeFileSync(memoryPath(), JSON.stringify(memory, null, 2), 'utf-8')
+}
+
+function addMemoryEntry(entry: Omit<MemoryEntry, 'id'>): MemoryEntry {
+  const memory = loadMemory()
+  const newEntry: MemoryEntry = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ...entry }
+  memory.entries.push(newEntry)
+  // Keep last 200 entries
+  if (memory.entries.length > 200) memory.entries = memory.entries.slice(-200)
+  saveMemory(memory)
+  return newEntry
+}
+
+function markFired(id: string, aspectRatio: string) {
+  const memory = loadMemory()
+  const entry = memory.entries.find(e => e.id === id)
+  if (entry) { entry.fired = true; entry.aspectRatio = aspectRatio }
+  saveMemory(memory)
+}
+
+// Build dynamic memory context to inject into system prompt
+function buildMemoryContext(): string {
+  const memory = loadMemory()
+  if (memory.entries.length === 0) return ''
+
+  // Prioritize fired prompts (real signal), then recent ones
+  const fired = memory.entries.filter(e => e.fired).slice(-8)
+  const recent = memory.entries.filter(e => !e.fired).slice(-5)
+  const pool = [...fired, ...recent].sort((a, b) => a.timestamp - b.timestamp)
+
+  if (pool.length === 0) return ''
+
+  const lines = pool.map(e => {
+    const label = e.fired ? '★ FIRED' : '○ generated'
+    const date = new Date(e.timestamp).toLocaleDateString('es-CO', { month: 'short', day: 'numeric' })
+    return `[${label} · ${date}]\nBrief: "${e.description}"\nPrompt:\n${e.prompt}`
+  }).join('\n\n---\n\n')
+
+  return `\n\n## PROMPT MEMORY — ${pool.length} past Brotherhood prompts (★ = approved & fired to Higgsfield)\nStudy these to calibrate vocabulary, light descriptions, garment detail depth, color language, and brand tone. Fired prompts are your strongest signal — replicate what makes them work.\n\n${lines}\n\n---\nApply learnings silently. Output ONLY the new prompt.`
+}
 
 const execFileAsync = promisify(execFile)
 
-// Load .env from app root (dev) or resources (prod)
+// Electron doesn't inherit the shell PATH — resolve common binary locations manually
+const SHELL_PATH = [
+  '/usr/local/bin',
+  '/opt/homebrew/bin',
+  '/opt/homebrew/sbin',
+  '/usr/bin',
+  '/bin',
+  process.env.PATH ?? '',
+].join(':')
+
+function shellEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, PATH: SHELL_PATH }
+}
+
+// Load .env — checks multiple locations so packaged app can find it
 function loadEnv() {
-  try {
-    const envPath = app.isPackaged
+  const candidates = [
+    join(homedir(), '.bmp.env'),
+    join(homedir(), '.env'),
+    app.isPackaged
       ? join(process.resourcesPath, '.env')
-      : join(__dirname, '../../.env')
-    const raw = readFileSync(envPath, 'utf-8')
-    for (const line of raw.split('\n')) {
-      const [key, ...rest] = line.split('=')
-      if (key && rest.length) process.env[key.trim()] = rest.join('=').trim()
-    }
-  } catch {}
+      : join(__dirname, '../../.env'),
+  ]
+  for (const envPath of candidates) {
+    try {
+      const raw = readFileSync(envPath, 'utf-8')
+      for (const line of raw.split('\n')) {
+        const [key, ...rest] = line.split('=')
+        if (key && rest.length) process.env[key.trim()] = rest.join('=').trim()
+      }
+      break
+    } catch {}
+  }
 }
 
 loadEnv()
@@ -54,32 +149,49 @@ Rules:
 - Marketing/editorial style — NOT e-commerce (no white background, no invisible mannequin)
 - Output ONLY the prompt text, no preamble or explanation`
 
+const MAX_IMAGE_PX = 1568 // Anthropic recommended max dimension
+
+function resizeAndEncode(p: string): { b64: string; mediaType: Anthropic.Base64ImageSource['media_type'] } | null {
+  try {
+    const img = nativeImage.createFromPath(p)
+    if (!img.isEmpty()) {
+      const { width, height } = img.getSize()
+      const scale = Math.min(1, MAX_IMAGE_PX / Math.max(width, height))
+      const resized = scale < 1
+        ? img.resize({ width: Math.round(width * scale), height: Math.round(height * scale), quality: 'good' })
+        : img
+      const b64 = resized.toJPEG(85).toString('base64')
+      if (b64) return { b64, mediaType: 'image/jpeg' }
+    }
+    // Fallback: read raw bytes and detect media type from extension
+    const raw = readFileSync(p)
+    const ext = p.split('.').pop()?.toLowerCase() ?? ''
+    const mediaType: Anthropic.Base64ImageSource['media_type'] =
+      ext === 'png' ? 'image/png' : ext === 'gif' ? 'image/gif' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
+    const b64 = raw.toString('base64')
+    if (!b64) return null
+    return { b64, mediaType }
+  } catch {
+    return null
+  }
+}
+
 function filesToVisionContent(paths: string[]): Anthropic.ImageBlockParam[] {
-  return paths.map((p) => {
-    const data = readFileSync(p)
-    const b64 = data.toString('base64')
-    const ext = p.split('.').pop()?.toLowerCase() ?? 'jpg'
-    const mediaMap: Record<string, Anthropic.Base64ImageSource['media_type']> = {
-      jpg: 'image/jpeg',
-      jpeg: 'image/jpeg',
-      png: 'image/png',
-      gif: 'image/gif',
-      webp: 'image/webp',
-    }
-    return {
+  return paths
+    .map((p) => resizeAndEncode(p))
+    .filter((r): r is NonNullable<typeof r> => r !== null && r.b64.length > 0)
+    .map(({ b64, mediaType }) => ({
       type: 'image' as const,
-      source: {
-        type: 'base64' as const,
-        media_type: mediaMap[ext] ?? 'image/jpeg',
-        data: b64,
-      },
-    }
-  })
+      source: { type: 'base64' as const, media_type: mediaType, data: b64 },
+    }))
 }
 
 ipcMain.handle('generate-prompt', async (_event, { refs, products, description }: { refs: string[]; products: string[]; description: string }) => {
   const refImages = filesToVisionContent(refs)
   const productImages = filesToVisionContent(products)
+
+  // Inject accumulated memory into system prompt
+  const systemWithMemory = SYSTEM_PROMPT + buildMemoryContext()
 
   const userContent: Anthropic.MessageParam['content'] = [
     { type: 'text', text: '## REFERENCE IMAGES (composition/mood):' },
@@ -95,23 +207,72 @@ ipcMain.handle('generate-prompt', async (_event, { refs, products, description }
   const message = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 1024,
-    system: SYSTEM_PROMPT,
+    system: systemWithMemory,
     messages: [{ role: 'user', content: userContent }],
   })
 
   const block = message.content[0]
   if (block.type !== 'text') throw new Error('Unexpected response type')
-  return block.text
+  const prompt = block.text
+
+  // Save to memory
+  const entry = addMemoryEntry({ timestamp: Date.now(), description, prompt, fired: false })
+
+  return { prompt, memoryId: entry.id }
 })
 
-ipcMain.handle('fire-higgsfield', async (event, { prompt }: { prompt: string }) => {
-  const timestamp = Date.now()
-  const tmpFile = join(tmpdir(), `bmp_prompt_${timestamp}.txt`)
-  writeFileSync(tmpFile, prompt, 'utf-8')
+ipcMain.handle('mark-prompt-fired', (_event, { id, aspectRatio }: { id: string; aspectRatio: string }) => {
+  markFired(id, aspectRatio)
+})
 
+ipcMain.handle('get-memory-stats', () => {
+  const memory = loadMemory()
+  return {
+    total: memory.entries.length,
+    fired: memory.entries.filter(e => e.fired).length,
+  }
+})
+
+ipcMain.handle('check-higgsfield-auth', async () => {
+  try {
+    const credsPath = join(homedir(), '.config', 'higgsfield', 'credentials.json')
+    const raw = readFileSync(credsPath, 'utf-8')
+    const creds = JSON.parse(raw)
+    return { authenticated: !!(creds.access_token) }
+  } catch {
+    return { authenticated: false }
+  }
+})
+
+ipcMain.handle('higgsfield-login', async () => {
+  try {
+    execFile('higgsfield', ['auth', 'login'], { env: shellEnv() })
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+})
+
+function downloadFile(url: string, destPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proto = url.startsWith('https') ? https : http
+    const file = createWriteStream(destPath)
+    proto.get(url, (res) => {
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        file.close()
+        downloadFile(res.headers.location, destPath).then(resolve).catch(reject)
+        return
+      }
+      res.pipe(file)
+      file.on('finish', () => file.close(() => resolve()))
+      file.on('error', reject)
+    }).on('error', reject)
+  })
+}
+
+ipcMain.handle('fire-higgsfield', async (event, { prompt, aspectRatio, products }: { prompt: string; aspectRatio: string; products: string[] }) => {
+  const timestamp = Date.now()
   const desktopPath = join(homedir(), 'Desktop')
-  const outputName = `bmp_${timestamp}.jpg`
-  const outputPath = join(desktopPath, outputName)
 
   const sendProgress = (line: string) => {
     event.sender.send('higgsfield-progress', line)
@@ -119,44 +280,41 @@ ipcMain.handle('fire-higgsfield', async (event, { prompt }: { prompt: string }) 
 
   sendProgress('Starting Higgsfield generation...')
 
-  // Build args
   const args = [
-    'generate', 'create', 'nano_banana_flash',
+    'generate', 'create', 'nano_banana_2',
     '--prompt', prompt,
     '--resolution', '1k',
-    '--aspect_ratio', '4:5',
+    '--aspect_ratio', aspectRatio || '4:5',
     '--wait',
   ]
 
+  // Attach all product images as visual reference — CLI auto-uploads local paths
+  if (products && products.length > 0) {
+    for (const p of products) args.push('--image', p)
+    sendProgress(`Uploading ${products.length} product image${products.length > 1 ? 's' : ''} as reference...`)
+  }
+
   try {
-    const { stdout, stderr } = await execFileAsync('higgsfield', args, {
-      timeout: 300_000,
-    })
+    const { stdout, stderr } = await execFileAsync('higgsfield', args, { timeout: 300_000, env: shellEnv() })
+    const combined = (stdout + '\n' + stderr).trim()
+    if (combined) sendProgress(combined)
 
-    if (stdout) sendProgress(stdout)
-    if (stderr) sendProgress(stderr)
-
-    // Try to find and copy output to Desktop
-    // higgsfield typically downloads to ~/Downloads or current dir — check both
-    const possiblePaths = [
-      join(homedir(), 'Downloads', `${timestamp}.jpg`),
-      join(homedir(), 'Downloads', 'output.jpg'),
-    ]
-
-    let found = false
-    for (const p of possiblePaths) {
-      try {
-        const { copyFileSync } = await import('fs')
-        copyFileSync(p, outputPath)
-        found = true
-        break
-      } catch {}
+    // Parse CDN URL from output (cloudfront or any https URL ending in image ext)
+    const urlMatch = combined.match(/https:\/\/\S+\.(png|jpg|jpeg|webp)/i)
+    if (urlMatch) {
+      const imageUrl = urlMatch[0]
+      const ext = imageUrl.split('.').pop()?.split('?')[0] ?? 'jpg'
+      const outputName = `bmp_${timestamp}.${ext}`
+      const outputPath = join(desktopPath, outputName)
+      sendProgress(`Downloading to Desktop...`)
+      await downloadFile(imageUrl, outputPath)
+      sendProgress(`Saved: ${outputName}`)
+      shell.showItemInFolder(outputPath)
+      return { success: true, outputPath }
     }
 
-    sendProgress(found ? `Saved to Desktop: ${outputName}` : 'Generation complete — check ~/Downloads')
-    if (found) shell.showItemInFolder(outputPath)
-
-    return { success: true, outputPath: found ? outputPath : '' }
+    sendProgress('Generation complete — no image URL found in output')
+    return { success: true, outputPath: '' }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     sendProgress(`Error: ${msg}`)
@@ -174,7 +332,7 @@ function createWindow() {
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 16 },
     webPreferences: {
-      preload: join(__dirname, '../preload/preload.js'),
+      preload: join(__dirname, '../preload/preload.mjs'),
       sandbox: false,
       contextIsolation: true,
     },
@@ -187,7 +345,50 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(createWindow)
+// Allow renderer to load local file images via localfile:// regardless of HTTP origin
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'localfile', privileges: { secure: true, supportFetchAPI: true, bypassCSP: true } },
+])
+
+function setupAutoUpdater() {
+  // Only run in packaged app — skip in dev
+  if (!app.isPackaged) return
+
+  autoUpdater.autoDownload = true
+  autoUpdater.autoInstallOnAppQuit = true
+
+  autoUpdater.on('update-available', (info) => {
+    dialog.showMessageBox({
+      type: 'info',
+      title: 'Actualización disponible',
+      message: `Nueva versión ${info.version} disponible. Descargando en segundo plano...`,
+      buttons: ['OK'],
+    })
+  })
+
+  autoUpdater.on('update-downloaded', () => {
+    dialog.showMessageBox({
+      type: 'info',
+      title: 'Actualización lista',
+      message: 'La actualización se instalará al cerrar la app. ¿Instalar ahora?',
+      buttons: ['Instalar y reiniciar', 'Después'],
+      defaultId: 0,
+    }).then(({ response }) => {
+      if (response === 0) autoUpdater.quitAndInstall()
+    })
+  })
+
+  autoUpdater.checkForUpdatesAndNotify()
+}
+
+app.whenReady().then(() => {
+  protocol.handle('localfile', (request) => {
+    const filePath = decodeURIComponent(request.url.slice('localfile://'.length))
+    return net.fetch(`file://${filePath}`)
+  })
+  createWindow()
+  setupAutoUpdater()
+})
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

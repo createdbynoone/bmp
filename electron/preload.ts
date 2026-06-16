@@ -4,8 +4,20 @@ contextBridge.exposeInMainWorld('bmp', {
   generatePrompt: (data: { refs: string[]; products: string[]; description: string }) =>
     ipcRenderer.invoke('generate-prompt', data),
 
-  fireHighsfield: (data: { prompt: string }) =>
+  fireHighsfield: (data: { prompt: string; aspectRatio: string; products: string[] }) =>
     ipcRenderer.invoke('fire-higgsfield', data),
+
+  markPromptFired: (data: { id: string; aspectRatio: string }) =>
+    ipcRenderer.invoke('mark-prompt-fired', data),
+
+  getMemoryStats: () =>
+    ipcRenderer.invoke('get-memory-stats'),
+
+  checkHiggsfieldAuth: () =>
+    ipcRenderer.invoke('check-higgsfield-auth'),
+
+  higgsfieldLogin: () =>
+    ipcRenderer.invoke('higgsfield-login'),
 
   onHiggsfieldProgress: (cb: (line: string) => void) => {
     ipcRenderer.on('higgsfield-progress', (_event, line) => cb(line))
