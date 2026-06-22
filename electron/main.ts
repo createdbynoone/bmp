@@ -367,6 +367,39 @@ function downloadFile(url: string, destPath: string): Promise<void> {
   })
 }
 
+function downloadDmgWithProgress(
+  url: string,
+  destPath: string,
+  token: string | undefined,
+  onProgress: (percent: number) => void,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const attempt = (attemptUrl: string) => {
+      const parsed = new URL(attemptUrl)
+      const proto = parsed.protocol === 'https:' ? https : http
+      const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {}
+
+      proto.get({ hostname: parsed.hostname, path: parsed.pathname + parsed.search, headers }, (res) => {
+        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          attempt(res.headers.location)
+          return
+        }
+        const total = parseInt(res.headers['content-length'] ?? '0', 10)
+        let received = 0
+        const file = createWriteStream(destPath)
+        res.on('data', (chunk: Buffer) => {
+          received += chunk.length
+          if (total > 0) onProgress(Math.round((received / total) * 100))
+        })
+        res.pipe(file)
+        file.on('finish', () => file.close(() => resolve()))
+        file.on('error', reject)
+      }).on('error', reject)
+    }
+    attempt(url)
+  })
+}
+
 ipcMain.handle('fire-higgsfield', async (event, { prompt, aspectRatio, products }: { prompt: string; aspectRatio: string; products: string[] }) => {
   const timestamp = Date.now()
   const desktopPath = join(homedir(), 'Desktop')
@@ -452,33 +485,44 @@ function setupAutoUpdater(win: BrowserWindow) {
   // Only run in packaged app — skip in dev
   if (!app.isPackaged) return
 
-  // Token needed to fetch latest-mac.yml from a private GitHub repo
-  if (process.env.GH_TOKEN) autoUpdater.addAuthHeader(`Bearer ${process.env.GH_TOKEN}`)
+  const token = process.env.GH_TOKEN
+  if (token) autoUpdater.addAuthHeader(`Bearer ${token}`)
 
-  autoUpdater.autoDownload = true
+  // Only use electron-updater to detect new versions — skip ShipIt install
+  // (ShipIt requires code signing; we handle the actual download ourselves)
+  autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = false
 
   const notify = (payload: object) => win.webContents.send('update-status', payload)
 
   autoUpdater.on('update-available', (info) => {
     notify({ phase: 'available', version: info.version })
-  })
 
-  autoUpdater.on('download-progress', (progress) => {
-    notify({ phase: 'downloading', percent: Math.round(progress.percent) })
-  })
+    // Download the DMG directly, bypassing ShipIt
+    const arch = process.arch === 'arm64' ? '-arm64' : ''
+    const filename = `BMP-${info.version}${arch}.dmg`
+    const dmgUrl = `https://github.com/createdbynoone/bmp/releases/download/v${info.version}/${filename}`
+    const destPath = join(homedir(), 'Desktop', filename)
 
-  autoUpdater.on('update-downloaded', () => {
-    notify({ phase: 'ready' })
-    // Give renderer 3 s to show countdown, then hard-restart
-    setTimeout(() => autoUpdater.quitAndInstall(false, true), 3500)
+    downloadDmgWithProgress(dmgUrl, destPath, token, (percent) => {
+      notify({ phase: 'downloading', percent, version: info.version })
+    })
+      .then(async () => {
+        notify({ phase: 'ready', version: info.version })
+        await shell.openPath(destPath)
+        // Quit after short delay so user sees the installer before the app closes
+        setTimeout(() => app.quit(), 2000)
+      })
+      .catch((err: Error) => {
+        notify({ phase: 'error', error: err.message })
+      })
   })
 
   autoUpdater.on('error', (err) => {
     notify({ phase: 'error', error: err.message })
   })
 
-  // Wait for renderer to load before starting check so first events aren't lost
+  // Wait for renderer to load before checking so first events aren't lost
   win.webContents.once('did-finish-load', () => autoUpdater.checkForUpdates())
 }
 

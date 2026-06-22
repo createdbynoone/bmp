@@ -11,24 +11,14 @@ interface UpdateStatus {
 
 export function UpdateBar() {
   const [status, setStatus] = useState<UpdateStatus | null>(null)
-  const [countdown, setCountdown] = useState(3)
   const [dismissed, setDismissed] = useState(false)
 
   useEffect(() => {
     const cleanup = window.bmp?.onUpdateStatus?.((s) => {
       setStatus(s as UpdateStatus)
-      if (s.phase === 'ready') setCountdown(3)
     })
     return cleanup
   }, [])
-
-  useEffect(() => {
-    if (status?.phase !== 'ready') return
-    const iv = setInterval(() => {
-      setCountdown((c) => Math.max(0, c - 1))
-    }, 1000)
-    return () => clearInterval(iv)
-  }, [status?.phase])
 
   if (!status || dismissed) return null
 
@@ -84,9 +74,9 @@ export function UpdateBar() {
               <>
                 <span className="text-accent text-[10px]">✓</span>
                 <span className="text-[10px] font-mono text-text-secondary tracking-wide">
-                  BMP {version && <span className="text-text-primary">{version}</span>} lista · reiniciando en{' '}
-                  <span className="text-accent tabular-nums">{countdown}s</span>
+                  BMP {version && <span className="text-text-primary">{version}</span>} descargada · abriendo instalador
                 </span>
+                <Spinner />
               </>
             )}
 
