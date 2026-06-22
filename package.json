@@ -1,6 +1,6 @@
 {
   "name": "bmp",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Brotherhood Marketing Prompts — Electron desktop app",
   "main": "out/main/main.js",
   "type": "module",
@@ -52,10 +52,6 @@
         {
           "target": "dmg",
           "arch": ["arm64", "x64"]
-        },
-        {
-          "target": "pkg",
-          "arch": ["arm64", "x64"]
         }
       ]
     },
@@ -70,6 +66,10 @@
         "from": "build/icons",
         "to": "icons",
         "filter": ["**/*.png"]
+      },
+      {
+        "from": ".env",
+        "to": ".env"
       }
     ]
   }

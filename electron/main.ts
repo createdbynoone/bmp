@@ -451,8 +451,20 @@ function setupAutoUpdater() {
   // Only run in packaged app — skip in dev
   if (!app.isPackaged) return
 
+  // Token needed to fetch latest-mac.yml from a private GitHub repo
+  if (process.env.GH_TOKEN) autoUpdater.addAuthHeader(`Bearer ${process.env.GH_TOKEN}`)
+
   autoUpdater.autoDownload = true
   autoUpdater.autoInstallOnAppQuit = true
+
+  autoUpdater.on('error', (err) => {
+    dialog.showMessageBox({
+      type: 'error',
+      title: 'Error de actualización',
+      message: `No se pudo verificar actualizaciones: ${err.message}`,
+      buttons: ['OK'],
+    })
+  })
 
   autoUpdater.on('update-available', (info) => {
     dialog.showMessageBox({
