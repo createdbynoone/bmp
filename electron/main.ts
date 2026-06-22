@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, nativeImage, protocol, net, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, nativeImage, protocol, net, dialog, Menu } from 'electron'
 import { join } from 'path'
 import { readFileSync, writeFileSync, existsSync, createWriteStream } from 'fs'
 import { homedir } from 'os'
@@ -9,6 +9,103 @@ import http from 'http'
 import Anthropic from '@anthropic-ai/sdk'
 import electronUpdater from 'electron-updater'
 const { autoUpdater } = electronUpdater
+
+// ─── Preferences ──────────────────────────────────────────────────────────────
+
+const ICON_STYLES = ['Default', 'Dark', 'ClearLight', 'ClearDark', 'TintedLight', 'TintedDark'] as const
+type IconStyle = typeof ICON_STYLES[number]
+
+interface Prefs {
+  iconStyle: IconStyle
+}
+
+function prefsPath(): string {
+  return join(app.getPath('userData'), 'bmp-prefs.json')
+}
+
+function loadPrefs(): Prefs {
+  try {
+    const raw = readFileSync(prefsPath(), 'utf-8')
+    return { iconStyle: 'Default', ...JSON.parse(raw) }
+  } catch {
+    return { iconStyle: 'Default' }
+  }
+}
+
+function savePrefs(prefs: Prefs) {
+  writeFileSync(prefsPath(), JSON.stringify(prefs, null, 2), 'utf-8')
+}
+
+function getIconPath(styleName: string): string {
+  const filename = `Icon-macOS-${styleName}-1024@1x.png`
+  if (app.isPackaged) return join(process.resourcesPath, 'icons', filename)
+  return join(__dirname, '../../build/icons', filename)
+}
+
+function applyDockIcon(styleName: string) {
+  if (process.platform !== 'darwin') return
+  try {
+    const icon = nativeImage.createFromPath(getIconPath(styleName))
+    if (!icon.isEmpty()) app.dock.setIcon(icon)
+  } catch {}
+}
+
+function buildAppMenu() {
+  const prefs = loadPrefs()
+
+  const iconSubmenu: Electron.MenuItemConstructorOptions[] = ICON_STYLES.map(style => ({
+    label: style,
+    type: 'radio' as const,
+    checked: prefs.iconStyle === style,
+    click: () => {
+      savePrefs({ ...loadPrefs(), iconStyle: style })
+      applyDockIcon(style)
+      buildAppMenu()
+    },
+  }))
+
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: app.getName(),
+      submenu: [
+        { role: 'about' },
+        { type: 'separator' },
+        { label: 'App Icon', submenu: iconSubmenu },
+        { type: 'separator' },
+        { role: 'services' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' },
+      ],
+    },
+    {
+      label: 'Window',
+      submenu: [
+        { role: 'minimize' },
+        { role: 'zoom' },
+        { type: 'separator' },
+        { role: 'front' },
+      ],
+    },
+  ]
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
 
 // ─── Prompt Memory ────────────────────────────────────────────────────────────
 
@@ -386,6 +483,8 @@ app.whenReady().then(() => {
     const filePath = decodeURIComponent(request.url.slice('localfile://'.length))
     return net.fetch(`file://${filePath}`)
   })
+  buildAppMenu()
+  applyDockIcon(loadPrefs().iconStyle)
   createWindow()
   setupAutoUpdater()
 })
