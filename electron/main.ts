@@ -419,7 +419,7 @@ ipcMain.handle('fire-higgsfield', async (event, { prompt, aspectRatio, products 
   }
 })
 
-function createWindow() {
+function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 920,
     height: 720,
@@ -440,6 +440,7 @@ function createWindow() {
   } else {
     win.loadFile(join(__dirname, '../renderer/index.html'))
   }
+  return win
 }
 
 // Allow renderer to load local file images via localfile:// regardless of HTTP origin
@@ -447,7 +448,7 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'localfile', privileges: { secure: true, supportFetchAPI: true, bypassCSP: true } },
 ])
 
-function setupAutoUpdater() {
+function setupAutoUpdater(win: BrowserWindow) {
   // Only run in packaged app — skip in dev
   if (!app.isPackaged) return
 
@@ -455,39 +456,30 @@ function setupAutoUpdater() {
   if (process.env.GH_TOKEN) autoUpdater.addAuthHeader(`Bearer ${process.env.GH_TOKEN}`)
 
   autoUpdater.autoDownload = true
-  autoUpdater.autoInstallOnAppQuit = true
+  autoUpdater.autoInstallOnAppQuit = false
 
-  autoUpdater.on('error', (err) => {
-    dialog.showMessageBox({
-      type: 'error',
-      title: 'Error de actualización',
-      message: `No se pudo verificar actualizaciones: ${err.message}`,
-      buttons: ['OK'],
-    })
-  })
+  const notify = (payload: object) => win.webContents.send('update-status', payload)
 
   autoUpdater.on('update-available', (info) => {
-    dialog.showMessageBox({
-      type: 'info',
-      title: 'Actualización disponible',
-      message: `Nueva versión ${info.version} disponible. Descargando en segundo plano...`,
-      buttons: ['OK'],
-    })
+    notify({ phase: 'available', version: info.version })
+  })
+
+  autoUpdater.on('download-progress', (progress) => {
+    notify({ phase: 'downloading', percent: Math.round(progress.percent) })
   })
 
   autoUpdater.on('update-downloaded', () => {
-    dialog.showMessageBox({
-      type: 'info',
-      title: 'Actualización lista',
-      message: 'La actualización se instalará al cerrar la app. ¿Instalar ahora?',
-      buttons: ['Instalar y reiniciar', 'Después'],
-      defaultId: 0,
-    }).then(({ response }) => {
-      if (response === 0) autoUpdater.quitAndInstall()
-    })
+    notify({ phase: 'ready' })
+    // Give renderer 3 s to show countdown, then hard-restart
+    setTimeout(() => autoUpdater.quitAndInstall(false, true), 3500)
   })
 
-  autoUpdater.checkForUpdatesAndNotify()
+  autoUpdater.on('error', (err) => {
+    notify({ phase: 'error', error: err.message })
+  })
+
+  // Wait for renderer to load before starting check so first events aren't lost
+  win.webContents.once('did-finish-load', () => autoUpdater.checkForUpdates())
 }
 
 app.whenReady().then(() => {
@@ -497,8 +489,8 @@ app.whenReady().then(() => {
   })
   buildAppMenu()
   applyDockIcon(loadPrefs().iconStyle)
-  createWindow()
-  setupAutoUpdater()
+  const win = createWindow()
+  setupAutoUpdater(win)
 })
 
 app.on('window-all-closed', () => {

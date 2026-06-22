@@ -23,4 +23,9 @@ contextBridge.exposeInMainWorld('bmp', {
     ipcRenderer.on('higgsfield-progress', (_event, line) => cb(line))
     return () => ipcRenderer.removeAllListeners('higgsfield-progress')
   },
+
+  onUpdateStatus: (cb: (status: { phase: string; version?: string; percent?: number; error?: string }) => void) => {
+    ipcRenderer.on('update-status', (_event, status) => cb(status))
+    return () => ipcRenderer.removeAllListeners('update-status')
+  },
 })

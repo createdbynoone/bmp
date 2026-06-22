@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { DropZone } from './components/DropZone'
 import { PromptOutput } from './components/PromptOutput'
 import { HiggsfieldButton } from './components/HiggsfieldButton'
+import { UpdateBar } from './components/UpdateBar'
 
 type GenerateStatus = 'idle' | 'loading' | 'done' | 'error'
 type FireStatus = 'idle' | 'loading' | 'done' | 'error'
@@ -122,6 +123,9 @@ export default function App() {
 
       {/* Divider */}
       <div className="h-px bg-border flex-shrink-0" />
+
+      {/* Update bar — visible only when update is in progress */}
+      <UpdateBar />
 
       {/* Main content — scrollable */}
       <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
