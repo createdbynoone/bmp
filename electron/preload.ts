@@ -4,8 +4,11 @@ contextBridge.exposeInMainWorld('bmp', {
   generatePrompt: (data: { refs: string[]; products: string[]; description: string }) =>
     ipcRenderer.invoke('generate-prompt', data),
 
-  fireHighsfield: (data: { prompt: string; aspectRatio: string; products: string[] }) =>
+  fireHighsfield: (data: { prompt: string; aspectRatio: string; products: string[]; resolution: string }) =>
     ipcRenderer.invoke('fire-higgsfield', data),
+
+  getHiggsfieldCredits: () =>
+    ipcRenderer.invoke('get-higgsfield-credits'),
 
   markPromptFired: (data: { id: string; aspectRatio: string }) =>
     ipcRenderer.invoke('mark-prompt-fired', data),

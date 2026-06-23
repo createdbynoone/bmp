@@ -400,7 +400,17 @@ function downloadDmgWithProgress(
   })
 }
 
-ipcMain.handle('fire-higgsfield', async (event, { prompt, aspectRatio, products }: { prompt: string; aspectRatio: string; products: string[] }) => {
+ipcMain.handle('get-higgsfield-credits', async () => {
+  try {
+    const { stdout } = await execFileAsync('higgsfield', ['account', 'status', '--json'], { env: shellEnv() })
+    const data = JSON.parse(stdout.trim())
+    return { credits: data.credits ?? 0, plan: data.subscription_plan_type ?? 'free' }
+  } catch {
+    return { credits: null, plan: null }
+  }
+})
+
+ipcMain.handle('fire-higgsfield', async (event, { prompt, aspectRatio, products, resolution }: { prompt: string; aspectRatio: string; products: string[]; resolution?: string }) => {
   const timestamp = Date.now()
   const desktopPath = join(homedir(), 'Desktop')
 
@@ -413,7 +423,7 @@ ipcMain.handle('fire-higgsfield', async (event, { prompt, aspectRatio, products 
   const args = [
     'generate', 'create', 'nano_banana_2',
     '--prompt', prompt,
-    '--resolution', '1k',
+    '--resolution', resolution || '1k',
     '--aspect_ratio', aspectRatio || '4:5',
     '--wait',
   ]

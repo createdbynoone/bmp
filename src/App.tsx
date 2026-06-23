@@ -7,6 +7,7 @@ import { UpdateBar } from './components/UpdateBar'
 type GenerateStatus = 'idle' | 'loading' | 'done' | 'error'
 type FireStatus = 'idle' | 'loading' | 'done' | 'error'
 type AspectRatio = '9:16' | '4:5' | '1:1'
+type Resolution = '1k' | '2k'
 
 export default function App() {
   const [refs, setRefs] = useState<string[]>([])
@@ -18,9 +19,11 @@ export default function App() {
   const [fireProgress, setFireProgress] = useState<string[]>([])
   const [error, setError] = useState('')
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('4:5')
+  const [resolution, setResolution] = useState<Resolution>('1k')
   const [showLoginModal, setShowLoginModal] = useState(false)
   const [memoryId, setMemoryId] = useState<string | null>(null)
   const [memoryStats, setMemoryStats] = useState<{ total: number; fired: number } | null>(null)
+  const [credits, setCredits] = useState<{ credits: number | null; plan: string | null } | null>(null)
 
   useEffect(() => {
     if (!window.bmp) return
@@ -30,6 +33,10 @@ export default function App() {
     return cleanup
   }, [])
 
+  const fetchCredits = () => {
+    window.bmp?.getHiggsfieldCredits?.().then((c) => setCredits(c))
+  }
+
   useEffect(() => {
     window.bmp?.checkHiggsfieldAuth?.().then((res: { authenticated: boolean }) => {
       if (!res.authenticated) {
@@ -38,6 +45,7 @@ export default function App() {
       }
     })
     window.bmp?.getMemoryStats?.().then((s: { total: number; fired: number }) => setMemoryStats(s))
+    fetchCredits()
   }, [])
 
   const canGenerate = refs.length > 0 && products.length > 0 && description.trim().length > 0
@@ -68,13 +76,14 @@ export default function App() {
     setFireProgress([])
 
     try {
-      const result = await window.bmp.fireHighsfield({ prompt, aspectRatio, products })
+      const result = await window.bmp.fireHighsfield({ prompt, aspectRatio, products, resolution })
       if (result.success) {
         setFireStatus('done')
         if (memoryId) {
           window.bmp?.markPromptFired?.({ id: memoryId, aspectRatio })
           window.bmp?.getMemoryStats?.().then((s: { total: number; fired: number }) => setMemoryStats(s))
         }
+        fetchCredits()
       } else {
         setFireStatus('error')
       }
@@ -214,17 +223,24 @@ export default function App() {
           disabled={!prompt}
           aspectRatio={aspectRatio}
           onAspectRatio={setAspectRatio}
+          resolution={resolution}
+          onResolution={setResolution}
         />
       </div>
 
       {/* Footer */}
       <div className="flex-shrink-0 border-t border-border px-5 py-2 flex items-center justify-between">
-        <span className="text-[9px] text-text-muted font-mono tracking-widest uppercase">nano_banana_2 · 1k</span>
+        <span className="text-[9px] text-text-muted font-mono tracking-widest uppercase">
+          nano_banana_2 · {resolution.toUpperCase()}
+        </span>
         <div className="flex items-center gap-3">
           {memoryStats && memoryStats.total > 0 && (
             <span className="text-[9px] font-mono text-text-muted">
               memory: {memoryStats.total} prompts · <span className="text-yellow-600/70">★ {memoryStats.fired} fired</span>
             </span>
+          )}
+          {credits && credits.credits !== null && (
+            <CreditsRing credits={credits.credits} plan={credits.plan ?? ''} />
           )}
           <span className="text-[9px] text-text-muted font-mono">BMP v1.0</span>
         </div>
@@ -251,6 +267,35 @@ export default function App() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ─── Credits ring ─────────────────────────────────────────────────────────────
+
+const CREDITS_MAX = 1000
+
+function CreditsRing({ credits, plan }: { credits: number; plan: string }) {
+  const R = 6
+  const CIRC = 2 * Math.PI * R
+  const pct = Math.min(credits / CREDITS_MAX, 1)
+  const dash = pct * CIRC
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <svg width="16" height="16" viewBox="0 0 16 16">
+        <circle cx="8" cy="8" r={R} stroke="currentColor" strokeWidth="2" fill="none" className="text-white/10" />
+        <circle
+          cx="8" cy="8" r={R}
+          stroke="currentColor" strokeWidth="2" fill="none"
+          className="text-accent"
+          strokeDasharray={`${dash} ${CIRC}`}
+          strokeLinecap="round"
+          transform="rotate(-90 8 8)"
+        />
+      </svg>
+      <span className="text-[9px] font-mono text-text-muted tabular-nums">{credits} cr</span>
+      {plan && <span className="text-[9px] font-mono text-text-muted/40 uppercase tracking-widest">{plan}</span>}
     </div>
   )
 }

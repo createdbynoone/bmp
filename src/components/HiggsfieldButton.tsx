@@ -5,6 +5,9 @@ type Status = 'idle' | 'loading' | 'done' | 'error'
 const RATIOS = ['9:16', '4:5', '1:1'] as const
 type AspectRatio = typeof RATIOS[number]
 
+const RESOLUTIONS = ['1k', '2k'] as const
+type Resolution = typeof RESOLUTIONS[number]
+
 interface HiggsfieldButtonProps {
   status: Status
   progress: string[]
@@ -12,6 +15,8 @@ interface HiggsfieldButtonProps {
   disabled: boolean
   aspectRatio: AspectRatio
   onAspectRatio: (r: AspectRatio) => void
+  resolution: Resolution
+  onResolution: (r: Resolution) => void
 }
 
 function HiggsfieldLogo() {
@@ -29,7 +34,7 @@ function HiggsfieldLogo() {
   )
 }
 
-export function HiggsfieldButton({ status, progress, onClick, disabled, aspectRatio, onAspectRatio }: HiggsfieldButtonProps) {
+export function HiggsfieldButton({ status, progress, onClick, disabled, aspectRatio, onAspectRatio, resolution, onResolution }: HiggsfieldButtonProps) {
   const isLoading = status === 'loading'
 
   return (
@@ -44,7 +49,7 @@ export function HiggsfieldButton({ status, progress, onClick, disabled, aspectRa
         </div>
       )}
 
-      {/* Controls row: ratio pills + fire button */}
+      {/* Controls row: ratio pills + resolution pills + fire button */}
       <div className="flex items-center gap-2">
 
         {/* Aspect ratio pills */}
@@ -64,6 +69,30 @@ export function HiggsfieldButton({ status, progress, onClick, disabled, aspectRa
               `}
             >
               {r}
+            </button>
+          ))}
+        </div>
+
+        {/* Divider */}
+        <div className="w-px h-4 bg-border flex-shrink-0" />
+
+        {/* Resolution pills */}
+        <div className="flex items-center gap-1 flex-shrink-0">
+          {RESOLUTIONS.map((r) => (
+            <button
+              key={r}
+              onClick={() => onResolution(r)}
+              disabled={isLoading}
+              className={`
+                px-2.5 py-[7px] rounded-md text-[10px] font-mono font-semibold tracking-wide border transition-all duration-150
+                ${resolution === r
+                  ? 'border-accent/70 bg-accent/10 text-accent'
+                  : 'border-border bg-transparent text-text-muted hover:border-accent/30 hover:text-accent/60'
+                }
+                ${isLoading ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'}
+              `}
+            >
+              {r.toUpperCase()}
             </button>
           ))}
         </div>
