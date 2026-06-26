@@ -44,10 +44,10 @@ export function DropZone({ label, multiple = false, files, onFiles }: DropZonePr
           <path d="M10 2v12M4 8l6-6 6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
           <path d="M3 16h14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
         </svg>
-        <span className="text-[15px] font-medium text-text-secondary uppercase tracking-widest">
+        <span className="text-[13.7px] font-medium text-text-secondary uppercase tracking-widest">
           {label}
         </span>
-        <span className="text-[15px] text-text-muted">
+        <span className="text-[11.7px] text-text-muted">
           {multiple ? 'Drop multiple images' : 'Drop an image'}
         </span>
       </div>
@@ -69,7 +69,7 @@ export function DropZone({ label, multiple = false, files, onFiles }: DropZonePr
                     onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                   />
                 </div>
-                <span className="text-[15px] text-text-secondary max-w-[80px] truncate">{name}</span>
+                <span className="text-[11.7px] text-text-secondary max-w-[80px] truncate">{name}</span>
                 <button
                   onClick={() => removeFile(idx)}
                   className="ml-0.5 text-text-muted hover:text-text-primary transition-colors opacity-0 group-hover:opacity-100"

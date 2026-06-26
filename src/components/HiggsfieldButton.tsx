@@ -34,7 +34,7 @@ function HiggsfieldLogo() {
         />
         <circle cx="51" cy="31" r="5" fill="currentColor" />
       </svg>
-      <span className="font-sans font-semibold text-[15px] tracking-wide">Higgsfield</span>
+      <span className="font-sans font-semibold text-[14.7px] tracking-wide">Higgsfield</span>
     </span>
   )
 }
@@ -49,7 +49,7 @@ export function HiggsfieldButton({ status, progress, onClick, disabled, aspectRa
       {progress.length > 0 && (
         <div className="bg-[#0f0f0f] border border-border rounded-lg px-3 py-2 max-h-[60px] overflow-y-auto">
           {progress.map((line, i) => (
-            <p key={i} className="text-[15px] font-mono text-text-secondary leading-relaxed">{line}</p>
+            <p key={i} className="text-[11.7px] font-mono text-text-secondary leading-relaxed">{line}</p>
           ))}
         </div>
       )}
@@ -65,7 +65,7 @@ export function HiggsfieldButton({ status, progress, onClick, disabled, aspectRa
               onClick={() => onAspectRatio(r)}
               disabled={isLoading}
               className={`
-                px-2.5 py-[7px] rounded-md text-[15px] font-mono font-semibold tracking-wide border transition-all duration-150
+                px-2.5 py-[7px] rounded-md text-[11.7px] font-mono font-semibold tracking-wide border transition-all duration-150
                 ${aspectRatio === r
                   ? 'border-white/50 bg-white/10 text-white'
                   : 'border-border bg-transparent text-text-muted hover:border-white/25 hover:text-white/70'
@@ -89,7 +89,7 @@ export function HiggsfieldButton({ status, progress, onClick, disabled, aspectRa
               onClick={() => onResolution(r)}
               disabled={isLoading}
               className={`
-                px-2.5 py-[7px] rounded-md text-[15px] font-mono font-semibold tracking-wide border transition-all duration-150
+                px-2.5 py-[7px] rounded-md text-[11.7px] font-mono font-semibold tracking-wide border transition-all duration-150
                 ${resolution === r
                   ? 'border-accent/70 bg-accent/10 text-accent'
                   : 'border-border bg-transparent text-text-muted hover:border-accent/30 hover:text-accent/60'
@@ -113,7 +113,7 @@ export function HiggsfieldButton({ status, progress, onClick, disabled, aspectRa
               onClick={() => onVariations(v)}
               disabled={isLoading}
               className={`
-                px-2 py-[7px] rounded-md text-[15px] font-mono font-semibold tracking-wide border transition-all duration-150
+                px-2 py-[7px] rounded-md text-[11.7px] font-mono font-semibold tracking-wide border transition-all duration-150
                 ${variations === v
                   ? 'border-white/50 bg-white/10 text-white'
                   : 'border-border bg-transparent text-text-muted hover:border-white/25 hover:text-white/70'
@@ -150,22 +150,22 @@ export function HiggsfieldButton({ status, progress, onClick, disabled, aspectRa
               <svg className="animate-spin flex-shrink-0" width="12" height="12" viewBox="0 0 14 14" fill="none">
                 <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.5" strokeDasharray="8 6" strokeLinecap="round"/>
               </svg>
-              <span className="text-[15px] font-heading font-semibold uppercase tracking-widest">Generating...</span>
+              <span className="text-[12.7px] font-heading font-semibold uppercase tracking-widest">Generating...</span>
             </>
           ) : status === 'done' ? (
             <>
               <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
                 <path d="M2 7l3.5 3.5 6.5-6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
               </svg>
-              <span className="text-[15px] font-heading font-semibold uppercase tracking-widest">Done — check Desktop</span>
+              <span className="text-[12.7px] font-heading font-semibold uppercase tracking-widest">Done — check Desktop</span>
             </>
           ) : status === 'error' ? (
-            <span className="text-[15px] font-heading font-semibold uppercase tracking-widest text-red-400">Error — retry</span>
+            <span className="text-[12.7px] font-heading font-semibold uppercase tracking-widest text-red-400">Error — retry</span>
           ) : (
             <>
               <HiggsfieldLogo />
               {variations > 1 && (
-                <span className="text-[15px] font-mono text-white/40 ml-1">×{variations}</span>
+                <span className="text-[11.7px] font-mono text-white/40 ml-1">×{variations}</span>
               )}
             </>
           )}
