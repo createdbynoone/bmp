@@ -42,8 +42,7 @@
     "publish": {
       "provider": "github",
       "owner": "createdbynoone",
-      "repo": "bmp",
-      "private": true
+      "repo": "bmp"
     },
     "mac": {
       "category": "public.app-category.graphics-design",
@@ -78,10 +77,6 @@
         "filter": [
           "**/*.png"
         ]
-      },
-      {
-        "from": ".env",
-        "to": ".env"
       }
     ]
   }

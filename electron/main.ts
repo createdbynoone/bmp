@@ -525,9 +525,6 @@ function setupAutoUpdater(win: BrowserWindow) {
   // Only run in packaged app — skip in dev
   if (!app.isPackaged) return
 
-  const token = process.env.GH_TOKEN
-  if (token) autoUpdater.addAuthHeader(`Bearer ${token}`)
-
   // Only use electron-updater to detect new versions — skip ShipIt install
   // (ShipIt requires code signing; we handle the actual download ourselves)
   autoUpdater.autoDownload = false
@@ -544,7 +541,7 @@ function setupAutoUpdater(win: BrowserWindow) {
     const dmgUrl = `https://github.com/createdbynoone/bmp/releases/download/v${info.version}/${filename}`
     const destPath = join(homedir(), 'Desktop', filename)
 
-    downloadDmgWithProgress(dmgUrl, destPath, token, (percent) => {
+    downloadDmgWithProgress(dmgUrl, destPath, undefined, (percent) => {
       notify({ phase: 'downloading', percent, version: info.version })
     })
       .then(async () => {
