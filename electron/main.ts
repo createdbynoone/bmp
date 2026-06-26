@@ -541,12 +541,26 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'localfile', privileges: { secure: true, supportFetchAPI: true, bypassCSP: true } },
 ])
 
+async function installFromDmg(dmgPath: string): Promise<void> {
+  // Mount the DMG silently and get the mount point from the plist output
+  const { stdout } = await execFileAsync('hdiutil', ['attach', dmgPath, '-nobrowse', '-plist'], { env: shellEnv() })
+  const mountMatch = stdout.match(/<key>mount-point<\/key>\s*<string>([^<]+)<\/string>/)
+  if (!mountMatch) throw new Error('DMG mount point not found')
+  const mountPoint = mountMatch[1].trim()
+
+  try {
+    // ditto preserves app bundle structure and permissions
+    await execFileAsync('ditto', [`${mountPoint}/BMP.app`, '/Applications/BMP.app'], { env: shellEnv() })
+  } finally {
+    // Always unmount, even if copy failed
+    await execFileAsync('hdiutil', ['detach', mountPoint, '-quiet', '-force'], { env: shellEnv() }).catch(() => {})
+  }
+}
+
 function setupAutoUpdater(win: BrowserWindow) {
   // Only run in packaged app — skip in dev
   if (!app.isPackaged) return
 
-  // Only use electron-updater to detect new versions — skip ShipIt install
-  // (ShipIt requires code signing; we handle the actual download ourselves)
   autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = false
 
@@ -555,23 +569,32 @@ function setupAutoUpdater(win: BrowserWindow) {
   autoUpdater.on('update-available', (info) => {
     notify({ phase: 'available', version: info.version })
 
-    // Download the DMG directly, bypassing ShipIt
     const arch = process.arch === 'arm64' ? '-arm64' : ''
     const filename = `BMP-${info.version}${arch}.dmg`
     const dmgUrl = `https://github.com/createdbynoone/bmp/releases/download/v${info.version}/${filename}`
-    const destPath = join(homedir(), 'Desktop', filename)
+    const tmpPath = join(app.getPath('temp'), filename)
 
-    downloadDmgWithProgress(dmgUrl, destPath, undefined, (percent) => {
+    downloadDmgWithProgress(dmgUrl, tmpPath, undefined, (percent) => {
       notify({ phase: 'downloading', percent, version: info.version })
     })
       .then(async () => {
+        notify({ phase: 'installing', version: info.version })
+        await installFromDmg(tmpPath)
         notify({ phase: 'ready', version: info.version })
-        await shell.openPath(destPath)
-        // Quit after short delay so user sees the installer before the app closes
-        setTimeout(() => app.quit(), 2000)
+        // Open the newly installed version and quit this one
+        setTimeout(async () => {
+          await shell.openPath('/Applications/BMP.app')
+          app.quit()
+        }, 1500)
       })
-      .catch((err: Error) => {
-        notify({ phase: 'error', error: err.message })
+      .catch(async (err: Error) => {
+        // Silent install failed — fall back to opening the DMG manually
+        notify({ phase: 'error', error: `Auto-install fallido, abriendo DMG: ${err.message}` })
+        const desktopPath = join(homedir(), 'Desktop', filename)
+        try {
+          await downloadFile(dmgUrl, desktopPath)
+          await shell.openPath(desktopPath)
+        } catch {}
       })
   })
 

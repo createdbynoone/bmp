@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 
-type UpdatePhase = 'available' | 'downloading' | 'ready' | 'error'
+type UpdatePhase = 'available' | 'downloading' | 'installing' | 'ready' | 'error'
 
 interface UpdateStatus {
   phase: UpdatePhase
@@ -70,11 +70,21 @@ export function UpdateBar() {
               </>
             )}
 
+            {phase === 'installing' && (
+              <>
+                <span className="text-accent text-[10px]">⚙</span>
+                <span className="text-[10px] font-mono text-text-secondary tracking-wide">
+                  BMP {version && <span className="text-text-primary">{version}</span>} · instalando...
+                </span>
+                <Spinner />
+              </>
+            )}
+
             {phase === 'ready' && (
               <>
                 <span className="text-accent text-[10px]">✓</span>
                 <span className="text-[10px] font-mono text-text-secondary tracking-wide">
-                  BMP {version && <span className="text-text-primary">{version}</span>} descargada · abriendo instalador
+                  BMP {version && <span className="text-text-primary">{version}</span>} instalada · reiniciando
                 </span>
                 <Spinner />
               </>

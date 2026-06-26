@@ -8,7 +8,7 @@ interface Window {
     checkHiggsfieldAuth: () => Promise<{ authenticated: boolean }>
     higgsfieldLogin: () => Promise<{ ok: boolean; error?: string }>
     onHiggsfieldProgress: (cb: (line: string) => void) => () => void
-    onUpdateStatus: (cb: (status: { phase: string; version?: string; percent?: number; error?: string }) => void) => () => void
+    onUpdateStatus: (cb: (status: { phase: 'available' | 'downloading' | 'installing' | 'ready' | 'error'; version?: string; percent?: number; error?: string }) => void) => () => void
     getVersion: () => Promise<string>
   }
 }
