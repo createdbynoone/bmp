@@ -1,11 +1,10 @@
-import { app, BrowserWindow, ipcMain, shell, nativeImage, protocol, net, dialog, Menu } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, nativeImage, protocol, net, Menu } from 'electron'
 import { join } from 'path'
 import { readFileSync, writeFileSync, existsSync, createWriteStream } from 'fs'
 import { homedir } from 'os'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import https from 'https'
-import http from 'http'
 import Anthropic from '@anthropic-ai/sdk'
 import electronUpdater from 'electron-updater'
 const { autoUpdater } = electronUpdater
@@ -283,7 +282,24 @@ function filesToVisionContent(paths: string[]): Anthropic.ImageBlockParam[] {
     }))
 }
 
+const GENERATE_COOLDOWN_MS = 4000
+let lastGenerateTime = 0
+
 ipcMain.handle('generate-prompt', async (_event, { refs, products, description }: { refs: string[]; products: string[]; description: string }) => {
+  const now = Date.now()
+  if (now - lastGenerateTime < GENERATE_COOLDOWN_MS) {
+    const wait = Math.ceil((GENERATE_COOLDOWN_MS - (now - lastGenerateTime)) / 1000)
+    throw new Error(`Rate limit: wait ${wait}s before generating again`)
+  }
+  lastGenerateTime = now
+
+  if (typeof description !== 'string' || description.trim().length === 0 || description.length > 2000) {
+    throw new Error('Invalid description')
+  }
+  if (!Array.isArray(refs) || !Array.isArray(products) || refs.length > 30 || products.length > 30) {
+    throw new Error('Invalid file input')
+  }
+
   const refImages = filesToVisionContent(refs)
   const productImages = filesToVisionContent(products)
 
@@ -351,10 +367,10 @@ ipcMain.handle('higgsfield-login', async () => {
 })
 
 function downloadFile(url: string, destPath: string): Promise<void> {
+  if (!url.startsWith('https://')) return Promise.reject(new Error('Only HTTPS downloads are allowed'))
   return new Promise((resolve, reject) => {
-    const proto = url.startsWith('https') ? https : http
     const file = createWriteStream(destPath)
-    proto.get(url, (res) => {
+    https.get(url, (res) => {
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         file.close()
         downloadFile(res.headers.location, destPath).then(resolve).catch(reject)
@@ -373,13 +389,17 @@ function downloadDmgWithProgress(
   token: string | undefined,
   onProgress: (percent: number) => void,
 ): Promise<void> {
+  if (!url.startsWith('https://')) return Promise.reject(new Error('Only HTTPS downloads are allowed'))
   return new Promise((resolve, reject) => {
     const attempt = (attemptUrl: string) => {
+      if (!attemptUrl.startsWith('https://')) {
+        reject(new Error('Redirect to non-HTTPS blocked'))
+        return
+      }
       const parsed = new URL(attemptUrl)
-      const proto = parsed.protocol === 'https:' ? https : http
       const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {}
 
-      proto.get({ hostname: parsed.hostname, path: parsed.pathname + parsed.search, headers }, (res) => {
+      https.get({ hostname: parsed.hostname, path: parsed.pathname + parsed.search, headers }, (res) => {
         if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           attempt(res.headers.location)
           return
@@ -410,7 +430,17 @@ ipcMain.handle('get-higgsfield-credits', async () => {
   }
 })
 
+const VALID_RESOLUTIONS = ['1k', '2k'] as const
+const VALID_ASPECT_RATIOS = ['9:16', '4:5', '1:1', '16:9', '1:2', '2:1'] as const
+
 ipcMain.handle('fire-higgsfield', async (event, { prompt, aspectRatio, products, resolution }: { prompt: string; aspectRatio: string; products: string[]; resolution?: string }) => {
+  if (typeof prompt !== 'string' || prompt.trim().length === 0 || prompt.length > 4000) {
+    throw new Error('Invalid prompt')
+  }
+  const safeResolution = VALID_RESOLUTIONS.includes(resolution as typeof VALID_RESOLUTIONS[number]) ? resolution : '1k'
+  const safeAspectRatio = VALID_ASPECT_RATIOS.includes(aspectRatio as typeof VALID_ASPECT_RATIOS[number]) ? aspectRatio : '4:5'
+  if (!Array.isArray(products) || products.length > 30) throw new Error('Invalid products')
+
   const timestamp = Date.now()
   const desktopPath = join(homedir(), 'Desktop')
 
@@ -423,8 +453,8 @@ ipcMain.handle('fire-higgsfield', async (event, { prompt, aspectRatio, products,
   const args = [
     'generate', 'create', 'nano_banana_2',
     '--prompt', prompt,
-    '--resolution', resolution || '1k',
-    '--aspect_ratio', aspectRatio || '4:5',
+    '--resolution', safeResolution || '1k',
+    '--aspect_ratio', safeAspectRatio || '4:5',
     '--wait',
   ]
 
@@ -473,8 +503,9 @@ function createWindow(): BrowserWindow {
     trafficLightPosition: { x: 16, y: 16 },
     webPreferences: {
       preload: join(__dirname, '../preload/preload.mjs'),
-      sandbox: false,
+      sandbox: true,
       contextIsolation: true,
+      nodeIntegration: false,
     },
   })
 
