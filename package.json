@@ -42,7 +42,8 @@
     "publish": {
       "provider": "github",
       "owner": "createdbynoone",
-      "repo": "bmp"
+      "repo": "bmp",
+      "releaseType": "release"
     },
     "mac": {
       "category": "public.app-category.graphics-design",
