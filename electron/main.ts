@@ -519,7 +519,6 @@ ipcMain.handle('fire-higgsfield', async (event, { prompt, aspectRatio, products,
       sendProgress(`Downloading to Desktop...`)
       await downloadFile(imageUrl, outputPath)
       sendProgress(`Saved: ${outputName}`)
-      shell.showItemInFolder(outputPath)
       return { success: true, outputPath }
     }
 
