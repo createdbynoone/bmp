@@ -31,4 +31,6 @@ contextBridge.exposeInMainWorld('bmp', {
     ipcRenderer.on('update-status', (_event, status) => cb(status))
     return () => ipcRenderer.removeAllListeners('update-status')
   },
+
+  getVersion: () => ipcRenderer.invoke('get-version'),
 })

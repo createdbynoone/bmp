@@ -337,6 +337,8 @@ ipcMain.handle('mark-prompt-fired', (_event, { id, aspectRatio }: { id: string; 
   markFired(id, aspectRatio)
 })
 
+ipcMain.handle('get-version', () => app.getVersion())
+
 ipcMain.handle('get-memory-stats', () => {
   const memory = loadMemory()
   return {

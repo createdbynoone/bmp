@@ -9,5 +9,6 @@ interface Window {
     higgsfieldLogin: () => Promise<{ ok: boolean; error?: string }>
     onHiggsfieldProgress: (cb: (line: string) => void) => () => void
     onUpdateStatus: (cb: (status: { phase: string; version?: string; percent?: number; error?: string }) => void) => () => void
+    getVersion: () => Promise<string>
   }
 }

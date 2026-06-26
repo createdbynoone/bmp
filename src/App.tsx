@@ -24,6 +24,7 @@ export default function App() {
   const [memoryId, setMemoryId] = useState<string | null>(null)
   const [memoryStats, setMemoryStats] = useState<{ total: number; fired: number } | null>(null)
   const [credits, setCredits] = useState<{ credits: number | null; plan: string | null } | null>(null)
+  const [appVersion, setAppVersion] = useState('')
 
   useEffect(() => {
     if (!window.bmp) return
@@ -46,6 +47,7 @@ export default function App() {
     })
     window.bmp?.getMemoryStats?.().then((s: { total: number; fired: number }) => setMemoryStats(s))
     fetchCredits()
+    window.bmp?.getVersion?.().then((v) => setAppVersion(v))
   }, [])
 
   const canGenerate = refs.length > 0 && products.length > 0 && description.trim().length > 0
@@ -242,7 +244,7 @@ export default function App() {
           {credits && credits.credits !== null && (
             <CreditsRing credits={credits.credits} plan={credits.plan ?? ''} />
           )}
-          <span className="text-[9px] text-text-muted font-mono">BMP v1.0</span>
+          <span className="text-[9px] text-text-muted font-mono">BMP v{appVersion || '—'}</span>
         </div>
       </div>
 
