@@ -8,6 +8,9 @@ type AspectRatio = typeof RATIOS[number]
 const RESOLUTIONS = ['1k', '2k'] as const
 type Resolution = typeof RESOLUTIONS[number]
 
+const VARIATIONS = [1, 2, 3, 4] as const
+type Variations = typeof VARIATIONS[number]
+
 interface HiggsfieldButtonProps {
   status: Status
   progress: string[]
@@ -17,6 +20,8 @@ interface HiggsfieldButtonProps {
   onAspectRatio: (r: AspectRatio) => void
   resolution: Resolution
   onResolution: (r: Resolution) => void
+  variations: Variations
+  onVariations: (v: Variations) => void
 }
 
 function HiggsfieldLogo() {
@@ -34,7 +39,7 @@ function HiggsfieldLogo() {
   )
 }
 
-export function HiggsfieldButton({ status, progress, onClick, disabled, aspectRatio, onAspectRatio, resolution, onResolution }: HiggsfieldButtonProps) {
+export function HiggsfieldButton({ status, progress, onClick, disabled, aspectRatio, onAspectRatio, resolution, onResolution, variations, onVariations }: HiggsfieldButtonProps) {
   const isLoading = status === 'loading'
 
   return (
@@ -97,6 +102,30 @@ export function HiggsfieldButton({ status, progress, onClick, disabled, aspectRa
           ))}
         </div>
 
+        {/* Divider */}
+        <div className="w-px h-4 bg-border flex-shrink-0" />
+
+        {/* Variations pills */}
+        <div className="flex items-center gap-1 flex-shrink-0">
+          {VARIATIONS.map((v) => (
+            <button
+              key={v}
+              onClick={() => onVariations(v)}
+              disabled={isLoading}
+              className={`
+                px-2 py-[7px] rounded-md text-[10px] font-mono font-semibold tracking-wide border transition-all duration-150
+                ${variations === v
+                  ? 'border-white/50 bg-white/10 text-white'
+                  : 'border-border bg-transparent text-text-muted hover:border-white/25 hover:text-white/70'
+                }
+                ${isLoading ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'}
+              `}
+            >
+              ×{v}
+            </button>
+          ))}
+        </div>
+
         {/* Fire button */}
         <button
           onClick={onClick}
@@ -133,7 +162,12 @@ export function HiggsfieldButton({ status, progress, onClick, disabled, aspectRa
           ) : status === 'error' ? (
             <span className="text-[11px] font-heading font-semibold uppercase tracking-widest text-red-400">Error — retry</span>
           ) : (
-            <HiggsfieldLogo />
+            <>
+              <HiggsfieldLogo />
+              {variations > 1 && (
+                <span className="text-[10px] font-mono text-white/40 ml-1">×{variations}</span>
+              )}
+            </>
           )}
         </button>
 

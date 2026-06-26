@@ -20,6 +20,7 @@ export default function App() {
   const [error, setError] = useState('')
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('4:5')
   const [resolution, setResolution] = useState<Resolution>('1k')
+  const [variations, setVariations] = useState(1)
   const [showLoginModal, setShowLoginModal] = useState(false)
   const [memoryId, setMemoryId] = useState<string | null>(null)
   const [memoryStats, setMemoryStats] = useState<{ total: number; fired: number } | null>(null)
@@ -78,16 +79,18 @@ export default function App() {
     setFireProgress([])
 
     try {
-      const result = await window.bmp.fireHighsfield({ prompt, aspectRatio, products, resolution })
-      if (result.success) {
-        setFireStatus('done')
+      const jobs = Array.from({ length: variations }, () =>
+        window.bmp.fireHighsfield({ prompt, aspectRatio, products, resolution })
+      )
+      const results = await Promise.all(jobs)
+      const anySuccess = results.some((r) => r.success)
+      setFireStatus(anySuccess ? 'done' : 'error')
+      if (anySuccess) {
         if (memoryId) {
           window.bmp?.markPromptFired?.({ id: memoryId, aspectRatio })
           window.bmp?.getMemoryStats?.().then((s: { total: number; fired: number }) => setMemoryStats(s))
         }
         fetchCredits()
-      } else {
-        setFireStatus('error')
       }
     } catch (err) {
       setFireStatus('error')
@@ -110,6 +113,7 @@ export default function App() {
     setFireProgress([])
     setError('')
     setMemoryId(null)
+    setVariations(1)
   }
 
   return (
@@ -227,6 +231,8 @@ export default function App() {
           onAspectRatio={setAspectRatio}
           resolution={resolution}
           onResolution={setResolution}
+          variations={variations as 1 | 2 | 3 | 4}
+          onVariations={setVariations}
         />
       </div>
 
