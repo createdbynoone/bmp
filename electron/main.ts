@@ -581,9 +581,10 @@ function setupAutoUpdater(win: BrowserWindow) {
         notify({ phase: 'installing', version: info.version })
         await installFromDmg(tmpPath)
         notify({ phase: 'ready', version: info.version })
-        // Open the newly installed version and quit this one
-        setTimeout(async () => {
-          await shell.openPath('/Applications/BMP.app')
+        // Relaunch using Electron's built-in relaunch — process.execPath points
+        // to the binary inside /Applications/BMP.app which ditto just replaced
+        setTimeout(() => {
+          app.relaunch()
           app.quit()
         }, 1500)
       })
