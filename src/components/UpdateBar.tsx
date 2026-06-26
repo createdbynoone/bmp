@@ -44,8 +44,8 @@ export function UpdateBar() {
           <div className="flex items-center gap-2.5 min-w-0">
             {phase === 'available' && (
               <>
-                <span className="text-accent text-[10px]">↓</span>
-                <span className="text-[10px] font-mono text-text-secondary tracking-wide">
+                <span className="text-accent text-[15px]">↓</span>
+                <span className="text-[15px] font-mono text-text-secondary tracking-wide">
                   BMP {version && <span className="text-text-primary">{version}</span>} disponible · iniciando descarga...
                 </span>
                 <Spinner />
@@ -54,8 +54,8 @@ export function UpdateBar() {
 
             {phase === 'downloading' && (
               <>
-                <span className="text-accent text-[10px]">↓</span>
-                <span className="text-[10px] font-mono text-text-secondary tracking-wide">
+                <span className="text-accent text-[15px]">↓</span>
+                <span className="text-[15px] font-mono text-text-secondary tracking-wide">
                   BMP {version && <span className="text-text-primary">{version}</span>} · descargando
                 </span>
                 <div className="flex items-center gap-1.5">
@@ -65,15 +65,15 @@ export function UpdateBar() {
                       style={{ width: `${percent ?? 0}%` }}
                     />
                   </div>
-                  <span className="text-[10px] font-mono text-accent tabular-nums">{percent ?? 0}%</span>
+                  <span className="text-[15px] font-mono text-accent tabular-nums">{percent ?? 0}%</span>
                 </div>
               </>
             )}
 
             {phase === 'installing' && (
               <>
-                <span className="text-accent text-[10px]">⚙</span>
-                <span className="text-[10px] font-mono text-text-secondary tracking-wide">
+                <span className="text-accent text-[15px]">⚙</span>
+                <span className="text-[15px] font-mono text-text-secondary tracking-wide">
                   BMP {version && <span className="text-text-primary">{version}</span>} · instalando...
                 </span>
                 <Spinner />
@@ -82,8 +82,8 @@ export function UpdateBar() {
 
             {phase === 'ready' && (
               <>
-                <span className="text-accent text-[10px]">✓</span>
-                <span className="text-[10px] font-mono text-text-secondary tracking-wide">
+                <span className="text-accent text-[15px]">✓</span>
+                <span className="text-[15px] font-mono text-text-secondary tracking-wide">
                   BMP {version && <span className="text-text-primary">{version}</span>} instalada · reiniciando
                 </span>
                 <Spinner />
@@ -92,8 +92,8 @@ export function UpdateBar() {
 
             {phase === 'error' && (
               <>
-                <span className="text-red-400 text-[10px]">⚠</span>
-                <span className="text-[10px] font-mono text-red-400/70 tracking-wide truncate">
+                <span className="text-red-400 text-[15px]">⚠</span>
+                <span className="text-[15px] font-mono text-red-400/70 tracking-wide truncate">
                   {error ?? 'Error al verificar actualizaciones'}
                 </span>
               </>
@@ -104,7 +104,7 @@ export function UpdateBar() {
           {phase === 'error' && (
             <button
               onClick={() => setDismissed(true)}
-              className="text-[10px] text-text-muted hover:text-text-secondary transition-colors flex-shrink-0"
+              className="text-[15px] text-text-muted hover:text-text-secondary transition-colors flex-shrink-0"
             >
               ×
             </button>

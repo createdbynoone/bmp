@@ -35,7 +35,7 @@ export function SettingsModal({ onClose }: Props) {
 
         {/* Header */}
         <div className="flex items-center justify-between">
-          <span className="font-heading font-bold text-text-primary text-sm uppercase tracking-widest">Settings</span>
+          <span className="font-heading font-bold text-text-primary text-[15px] uppercase tracking-widest">Settings</span>
           <button
             onClick={onClose}
             className="text-text-muted hover:text-text-secondary transition-colors"
@@ -48,21 +48,21 @@ export function SettingsModal({ onClose }: Props) {
 
         {/* Output path */}
         <div className="flex flex-col gap-2">
-          <label className="text-[10px] font-heading font-semibold uppercase tracking-widest text-text-secondary">
+          <label className="text-[15px] font-heading font-semibold uppercase tracking-widest text-text-secondary">
             Output Folder
           </label>
-          <p className="text-[10px] text-text-muted leading-relaxed">
+          <p className="text-[15px] text-text-muted leading-relaxed">
             Las imágenes generadas por Higgsfield se guardarán en esta carpeta.
           </p>
           <div className="flex items-center gap-2 mt-1">
             <div className="flex-1 bg-bg border border-border rounded-lg px-3 py-2 min-w-0">
-              <p className="text-[11px] font-mono text-text-secondary truncate" title={outputPath}>
+              <p className="text-[15px] font-mono text-text-secondary truncate" title={outputPath}>
                 {outputPath || '—'}
               </p>
             </div>
             <button
               onClick={handleBrowse}
-              className="flex-shrink-0 px-3 py-2 rounded-lg border border-border text-[10px] font-heading font-semibold uppercase tracking-widest text-text-secondary hover:border-white/30 hover:text-text-primary transition-colors"
+              className="flex-shrink-0 px-3 py-2 rounded-lg border border-border text-[15px] font-heading font-semibold uppercase tracking-widest text-text-secondary hover:border-white/30 hover:text-text-primary transition-colors"
             >
               Browse
             </button>
@@ -74,7 +74,7 @@ export function SettingsModal({ onClose }: Props) {
           onClick={handleSave}
           disabled={!outputPath}
           className={`
-            w-full py-2.5 rounded-lg font-heading font-semibold text-xs uppercase tracking-widest border transition-all duration-150
+            w-full py-2.5 rounded-lg font-heading font-semibold text-[15px] uppercase tracking-widest border transition-all duration-150
             ${saved
               ? 'border-green-500/40 bg-green-500/10 text-green-400'
               : !outputPath

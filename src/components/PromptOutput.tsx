@@ -16,13 +16,13 @@ export function PromptOutput({ prompt }: PromptOutputProps) {
   return (
     <div className="relative bg-surface border border-border rounded-lg overflow-hidden">
       <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-        <span className="text-[10px] font-medium uppercase tracking-widest text-text-secondary font-heading">
+        <span className="text-[15px] font-medium uppercase tracking-widest text-text-secondary font-heading">
           Generated Prompt
         </span>
         <button
           onClick={copy}
           className={`
-            flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-widest
+            flex items-center gap-1.5 text-[15px] font-medium uppercase tracking-widest
             px-2.5 py-1 rounded border transition-all duration-150
             ${copied
               ? 'border-accent text-accent bg-accent/10'
@@ -48,7 +48,7 @@ export function PromptOutput({ prompt }: PromptOutputProps) {
           )}
         </button>
       </div>
-      <pre className="prompt-output p-4 text-xs font-mono text-text-primary leading-relaxed whitespace-pre-wrap overflow-auto max-h-[200px]">
+      <pre className="prompt-output p-4 text-[15px] font-mono text-text-primary leading-relaxed whitespace-pre-wrap overflow-auto max-h-[200px]">
         {prompt}
       </pre>
     </div>

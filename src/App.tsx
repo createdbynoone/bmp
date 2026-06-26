@@ -141,14 +141,14 @@ export default function App() {
       <div className="titlebar-drag flex items-center justify-between px-5 pt-4 pb-3 flex-shrink-0">
         <div className="titlebar-nodrag flex items-center gap-3" style={{ marginLeft: '64px' }}>
           <span className="font-heading font-bold text-base text-text-primary tracking-tight">BMP</span>
-          <span className="text-text-muted text-xs">·</span>
-          <span className="text-text-secondary text-xs font-medium tracking-wide">Brotherhood Marketing Prompts</span>
+          <span className="text-text-muted text-[15px]">·</span>
+          <span className="text-text-secondary text-[15px] font-medium tracking-wide">Brotherhood Marketing Prompts</span>
         </div>
         <div className="titlebar-nodrag flex items-center gap-3">
-          <span className="text-[10px] text-text-muted font-mono tracking-widest uppercase">brotherhood.com.co</span>
+          <span className="text-[15px] text-text-muted font-mono tracking-widest uppercase">brotherhood.com.co</span>
           <button
             onClick={reset}
-            className="text-[10px] text-text-muted hover:text-text-secondary uppercase tracking-widest transition-colors"
+            className="text-[15px] text-text-muted hover:text-text-secondary uppercase tracking-widest transition-colors"
           >
             Reset
           </button>
@@ -177,13 +177,13 @@ export default function App() {
         {/* Drop zones */}
         <div className="grid grid-cols-2 gap-3">
           <div className="bg-surface border border-border rounded-lg p-3 flex flex-col gap-2">
-            <label className="text-[10px] font-heading font-semibold uppercase tracking-widest text-text-secondary">
+            <label className="text-[15px] font-heading font-semibold uppercase tracking-widest text-text-secondary">
               References <span className="text-text-muted">(composition / mood)</span>
             </label>
             <DropZone label="+ Add refs" multiple files={refs} onFiles={setRefs} />
           </div>
           <div className="bg-surface border border-border rounded-lg p-3 flex flex-col gap-2">
-            <label className="text-[10px] font-heading font-semibold uppercase tracking-widest text-text-secondary">
+            <label className="text-[15px] font-heading font-semibold uppercase tracking-widest text-text-secondary">
               Product <span className="text-text-muted">(Brotherhood garment)</span>
             </label>
             <DropZone label="+ Add product" multiple files={products} onFiles={setProducts} />
@@ -192,7 +192,7 @@ export default function App() {
 
         {/* Description */}
         <div className="bg-surface border border-border rounded-lg p-3 flex flex-col gap-2">
-          <label className="text-[10px] font-heading font-semibold uppercase tracking-widest text-text-secondary">
+          <label className="text-[15px] font-heading font-semibold uppercase tracking-widest text-text-secondary">
             Brief Description
           </label>
           <textarea
@@ -200,7 +200,7 @@ export default function App() {
             onChange={(e) => setDescription(e.target.value)}
             placeholder='Ej: "gorra en ola de playa, luz dorada al atardecer"'
             rows={2}
-            className="w-full bg-transparent text-sm text-text-primary placeholder:text-text-muted font-sans leading-relaxed focus:outline-none"
+            className="w-full bg-transparent text-[15px] text-text-primary placeholder:text-text-muted font-sans leading-relaxed focus:outline-none"
           />
         </div>
 
@@ -209,7 +209,7 @@ export default function App() {
           onClick={handleGenerate}
           disabled={!canGenerate || generateStatus === 'loading'}
           className={`
-            w-full py-3 rounded-lg font-heading font-semibold text-sm uppercase tracking-widest
+            w-full py-3 rounded-lg font-heading font-semibold text-[15px] uppercase tracking-widest
             border transition-all duration-150
             ${generateStatus === 'loading'
               ? 'border-accent/30 bg-accent/5 text-accent/50 cursor-not-allowed'
@@ -232,7 +232,7 @@ export default function App() {
         {/* Error */}
         {error && (
           <div className="bg-red-500/5 border border-red-500/20 rounded-lg px-4 py-3">
-            <p className="text-xs text-red-400 font-mono">{error}</p>
+            <p className="text-[15px] text-red-400 font-mono">{error}</p>
           </div>
         )}
 
@@ -242,7 +242,7 @@ export default function App() {
         {/* Empty state hint */}
         {!prompt && generateStatus === 'idle' && (
           <div className="flex-1 flex items-center justify-center py-6">
-            <p className="text-[10px] text-text-muted uppercase tracking-[0.2em] font-heading">
+            <p className="text-[15px] text-text-muted uppercase tracking-[0.2em] font-heading">
               Drop refs + product · Write brief · Generate
             </p>
           </div>
@@ -267,19 +267,19 @@ export default function App() {
 
       {/* Footer */}
       <div className="flex-shrink-0 border-t border-border px-5 py-2 flex items-center justify-between">
-        <span className="text-[9px] text-text-muted font-mono tracking-widest uppercase">
+        <span className="text-[15px] text-text-muted font-mono tracking-widest uppercase">
           nano_banana_2 · {resolution.toUpperCase()}
         </span>
         <div className="flex items-center gap-3">
           {memoryStats && memoryStats.total > 0 && (
-            <span className="text-[9px] font-mono text-text-muted">
+            <span className="text-[15px] font-mono text-text-muted">
               memory: {memoryStats.total} prompts · <span className="text-yellow-600/70">★ {memoryStats.fired} fired</span>
             </span>
           )}
           {credits && credits.credits !== null && (
             <CreditsRing credits={credits.credits} plan={credits.plan ?? ''} />
           )}
-          <span className="text-[9px] text-text-muted font-mono">BMP v{appVersion || '—'}</span>
+          <span className="text-[15px] text-text-muted font-mono">BMP v{appVersion || '—'}</span>
         </div>
       </div>
 
@@ -291,15 +291,15 @@ export default function App() {
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
           <div className="bg-surface border border-border rounded-xl p-6 w-80 flex flex-col gap-4">
             <div className="flex flex-col gap-1">
-              <span className="font-heading font-bold text-text-primary text-sm uppercase tracking-widest">Higgsfield Auth</span>
-              <p className="text-xs text-text-secondary leading-relaxed">
+              <span className="font-heading font-bold text-text-primary text-[15px] uppercase tracking-widest">Higgsfield Auth</span>
+              <p className="text-[15px] text-text-secondary leading-relaxed">
                 Se abrió el navegador para iniciar sesión en Higgsfield. Completa el login y luego cierra este aviso.
               </p>
             </div>
             <div className="flex gap-2">
               <button
                 onClick={() => setShowLoginModal(false)}
-                className="flex-1 py-2 rounded-lg bg-white text-black text-xs font-heading font-semibold uppercase tracking-widest hover:bg-white/90 transition-colors"
+                className="flex-1 py-2 rounded-lg bg-white text-black text-[15px] font-heading font-semibold uppercase tracking-widest hover:bg-white/90 transition-colors"
               >
                 Listo, ya inicié sesión
               </button>
@@ -334,8 +334,8 @@ function CreditsRing({ credits, plan }: { credits: number; plan: string }) {
           transform="rotate(-90 8 8)"
         />
       </svg>
-      <span className="text-[9px] font-mono text-text-muted tabular-nums">{credits} cr</span>
-      {plan && <span className="text-[9px] font-mono text-text-muted/40 uppercase tracking-widest">{plan}</span>}
+      <span className="text-[15px] font-mono text-text-muted tabular-nums">{credits} cr</span>
+      {plan && <span className="text-[15px] font-mono text-text-muted/40 uppercase tracking-widest">{plan}</span>}
     </div>
   )
 }
