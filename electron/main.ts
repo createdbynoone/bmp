@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, shell, nativeImage, protocol, net, Menu } from 'electron'
 import { join } from 'path'
-import { readFileSync, writeFileSync, existsSync, createWriteStream } from 'fs'
+import { readFileSync, writeFileSync, createWriteStream } from 'fs'
 import { homedir } from 'os'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
@@ -196,7 +196,6 @@ function shellEnv(): NodeJS.ProcessEnv {
 function loadEnv() {
   const candidates = [
     join(homedir(), '.bmp.env'),
-    join(homedir(), '.env'),
     app.isPackaged
       ? join(process.resourcesPath, '.env')
       : join(__dirname, '../../.env'),
