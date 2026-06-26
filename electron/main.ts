@@ -538,7 +538,7 @@ function createWindow(): BrowserWindow {
     height: 720,
     minWidth: 800,
     minHeight: 600,
-    backgroundColor: '#0a0a0a',
+    backgroundColor: '#0c0c0c',
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 16 },
     webPreferences: {

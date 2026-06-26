@@ -47,7 +47,7 @@ export function HiggsfieldButton({ status, progress, onClick, disabled, aspectRa
 
       {/* Progress log — shown above the controls */}
       {progress.length > 0 && (
-        <div className="bg-[#0d0d0d] border border-border rounded-lg px-3 py-2 max-h-[60px] overflow-y-auto">
+        <div className="bg-[#0f0f0f] border border-border rounded-lg px-3 py-2 max-h-[60px] overflow-y-auto">
           {progress.map((line, i) => (
             <p key={i} className="text-[10px] font-mono text-text-secondary leading-relaxed">{line}</p>
           ))}

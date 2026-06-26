@@ -5,13 +5,13 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        bg: '#0a0a0a',
-        surface: '#111111',
-        border: '#1e1e1e',
+        bg: '#0c0c0c',
+        surface: '#141414',
+        border: '#242424',
         accent: '#E8B547',
         'text-primary': '#F0EBE0',
-        'text-secondary': '#555555',
-        'text-muted': '#333333',
+        'text-secondary': '#666666',
+        'text-muted': '#3d3d3d',
       },
       fontFamily: {
         sans: ['Inter', 'system-ui', 'sans-serif'],
