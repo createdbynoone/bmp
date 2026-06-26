@@ -33,4 +33,8 @@ contextBridge.exposeInMainWorld('bmp', {
   },
 
   getVersion: () => ipcRenderer.invoke('get-version'),
+
+  getOutputPath: () => ipcRenderer.invoke('get-output-path'),
+  setOutputPath: (path: string) => ipcRenderer.invoke('set-output-path', path),
+  openFolderDialog: () => ipcRenderer.invoke('open-folder-dialog') as Promise<string | null>,
 })

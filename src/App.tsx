@@ -3,6 +3,7 @@ import { DropZone } from './components/DropZone'
 import { PromptOutput } from './components/PromptOutput'
 import { HiggsfieldButton } from './components/HiggsfieldButton'
 import { UpdateBar } from './components/UpdateBar'
+import { SettingsModal } from './components/SettingsModal'
 
 type GenerateStatus = 'idle' | 'loading' | 'done' | 'error'
 type FireStatus = 'idle' | 'loading' | 'done' | 'error'
@@ -26,6 +27,7 @@ export default function App() {
   const [memoryStats, setMemoryStats] = useState<{ total: number; fired: number } | null>(null)
   const [credits, setCredits] = useState<{ credits: number | null; plan: string | null } | null>(null)
   const [appVersion, setAppVersion] = useState('')
+  const [showSettings, setShowSettings] = useState(false)
 
   useEffect(() => {
     if (!window.bmp) return
@@ -150,6 +152,16 @@ export default function App() {
           >
             Reset
           </button>
+          <button
+            onClick={() => setShowSettings(true)}
+            className="text-text-muted hover:text-text-secondary transition-colors"
+            title="Settings"
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <circle cx="7" cy="7" r="2" stroke="currentColor" strokeWidth="1.25"/>
+              <path d="M7 1v1.5M7 11.5V13M1 7h1.5M11.5 7H13M2.697 2.697l1.06 1.06M10.243 10.243l1.06 1.06M2.697 11.303l1.06-1.06M10.243 3.757l1.06-1.06" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round"/>
+            </svg>
+          </button>
         </div>
       </div>
 
@@ -270,6 +282,9 @@ export default function App() {
           <span className="text-[9px] text-text-muted font-mono">BMP v{appVersion || '—'}</span>
         </div>
       </div>
+
+      {/* Settings modal */}
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
 
       {/* Higgsfield login modal */}
       {showLoginModal && (

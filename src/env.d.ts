@@ -10,5 +10,8 @@ interface Window {
     onHiggsfieldProgress: (cb: (line: string) => void) => () => void
     onUpdateStatus: (cb: (status: { phase: 'available' | 'downloading' | 'installing' | 'ready' | 'error'; version?: string; percent?: number; error?: string }) => void) => () => void
     getVersion: () => Promise<string>
+    getOutputPath: () => Promise<string>
+    setOutputPath: (path: string) => Promise<void>
+    openFolderDialog: () => Promise<string | null>
   }
 }

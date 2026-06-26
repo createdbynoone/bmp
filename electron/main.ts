@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, nativeImage, protocol, net, Menu } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, nativeImage, protocol, net, Menu, dialog } from 'electron'
 import { join } from 'path'
 import { readFileSync, writeFileSync, createWriteStream } from 'fs'
 import { homedir } from 'os'
@@ -16,18 +16,23 @@ type IconStyle = typeof ICON_STYLES[number]
 
 interface Prefs {
   iconStyle: IconStyle
+  outputPath: string
 }
 
 function prefsPath(): string {
   return join(app.getPath('userData'), 'bmp-prefs.json')
 }
 
+function defaultOutputPath(): string {
+  return join(homedir(), 'Desktop')
+}
+
 function loadPrefs(): Prefs {
   try {
     const raw = readFileSync(prefsPath(), 'utf-8')
-    return { iconStyle: 'Default', ...JSON.parse(raw) }
+    return { iconStyle: 'Default', outputPath: defaultOutputPath(), ...JSON.parse(raw) }
   } catch {
-    return { iconStyle: 'Default' }
+    return { iconStyle: 'Default', outputPath: defaultOutputPath() }
   }
 }
 
@@ -349,6 +354,22 @@ ipcMain.handle('mark-prompt-fired', (_event, { id, aspectRatio }: { id: string; 
 
 ipcMain.handle('get-version', () => app.getVersion())
 
+ipcMain.handle('get-output-path', () => loadPrefs().outputPath)
+
+ipcMain.handle('set-output-path', (_event, path: string) => {
+  if (typeof path !== 'string' || path.length === 0) throw new Error('Invalid path')
+  savePrefs({ ...loadPrefs(), outputPath: path })
+})
+
+ipcMain.handle('open-folder-dialog', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory', 'createDirectory'],
+    title: 'Choose output folder',
+  })
+  if (result.canceled || result.filePaths.length === 0) return null
+  return result.filePaths[0]
+})
+
 ipcMain.handle('get-memory-stats', () => {
   const memory = loadMemory()
   return {
@@ -453,7 +474,7 @@ ipcMain.handle('fire-higgsfield', async (event, { prompt, aspectRatio, products,
   if (!Array.isArray(products) || products.length > 30) throw new Error('Invalid products')
 
   const timestamp = Date.now()
-  const desktopPath = join(homedir(), 'Desktop')
+  const desktopPath = loadPrefs().outputPath
 
   const sendProgress = (line: string) => {
     event.sender.send('higgsfield-progress', line)
