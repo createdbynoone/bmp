@@ -64,6 +64,18 @@
         }
       ]
     },
+    "dmg": {
+      "background": "build/background.png",
+      "window": {
+        "width": 540,
+        "height": 380
+      },
+      "contents": [
+        { "x": 130, "y": 216, "type": "file" },
+        { "x": 410, "y": 216, "type": "link", "path": "/Applications" }
+      ],
+      "iconSize": 80
+    },
     "directories": {
       "output": "release"
     },
