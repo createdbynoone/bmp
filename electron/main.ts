@@ -242,7 +242,17 @@ Rules:
 - The garment must be clearly identifiable — color, graphics, and construction details preserved faithfully
 - Think like a fashion photographer: environment, light, angle, and garment interaction are the four pillars
 - Marketing/editorial style — NOT e-commerce (no white background, no invisible mannequin)
-- Output ONLY the prompt text, no preamble or explanation`
+- Output ONLY the prompt text, no preamble or explanation
+
+HIGGSFIELD CONTENT SAFETY — violations cause silent generation failure with no image output:
+- Describe body only in relation to garment fit and drape — never as a primary subject
+- No weapons, blood, violence, drugs, political symbols, or explicit anatomy of any kind
+- No other real brand names or logos — Brotherhood/BRHD only
+- Settings must be public, commercial, or natural spaces — avoid private or intimate interiors
+- Avoid overly dark or threatening atmosphere — keep tone aspirational and editorial
+- Do not reference real public figures, celebrities, or identifiable faces
+- If a graphic on the garment contains text, describe its visual style only (e.g. "gothic serif lettering") — do not reproduce the exact words if they could be flagged
+- Keep lighting descriptions neutral — avoid "harsh shadows" on faces, "low-key" alone, or any wording that sounds like surveillance/threat context`
 
 const MAX_IMAGE_PX = 1568 // Anthropic recommended max dimension
 
@@ -470,6 +480,14 @@ ipcMain.handle('fire-higgsfield', async (event, { prompt, aspectRatio, products,
     const combined = (stdout + '\n' + stderr).trim()
     if (combined) sendProgress(combined)
 
+    // Detect explicit CLI-level failure even when exit code was 0
+    const cliError = combined.match(/\b(error|failed|failure|rejected|content.?policy|moderat|violat|unsafe|prohibited)\b/i)
+    if (cliError) {
+      const snippet = combined.slice(0, 200)
+      sendProgress(`Generation failed — ${snippet}`)
+      return { success: false, outputPath: '', error: snippet }
+    }
+
     // Parse CDN URL from output (cloudfront or any https URL ending in image ext)
     const urlMatch = combined.match(/https:\/\/\S+\.(png|jpg|jpeg|webp)/i)
     if (urlMatch) {
@@ -484,12 +502,12 @@ ipcMain.handle('fire-higgsfield', async (event, { prompt, aspectRatio, products,
       return { success: true, outputPath }
     }
 
-    sendProgress('Generation complete — no image URL found in output')
-    return { success: true, outputPath: '' }
+    sendProgress('Generation failed — no image URL in CLI output (possible content policy or quota issue)')
+    return { success: false, outputPath: '', error: 'No image URL in output' }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     sendProgress(`Error: ${msg}`)
-    return { success: false, outputPath: '' }
+    return { success: false, outputPath: '', error: msg }
   }
 })
 

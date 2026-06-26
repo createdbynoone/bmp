@@ -79,13 +79,30 @@ export default function App() {
     setFireProgress([])
 
     try {
-      const jobs = Array.from({ length: variations }, () =>
-        window.bmp.fireHighsfield({ prompt, aspectRatio, products, resolution })
+      // allSettled so all jobs complete even if some fail
+      const settled = await Promise.allSettled(
+        Array.from({ length: variations }, () =>
+          window.bmp.fireHighsfield({ prompt, aspectRatio, products, resolution })
+        )
       )
-      const results = await Promise.all(jobs)
-      const anySuccess = results.some((r) => r.success)
-      setFireStatus(anySuccess ? 'done' : 'error')
-      if (anySuccess) {
+      const succeeded = settled.filter(
+        (s) => s.status === 'fulfilled' && s.value.success
+      ).length
+      const failed = variations - succeeded
+
+      if (variations > 1) {
+        setFireProgress((prev) => [
+          ...prev,
+          failed === 0
+            ? `All ${variations} variations generated.`
+            : succeeded === 0
+            ? `All ${variations} variations failed.`
+            : `${succeeded}/${variations} variations generated — ${failed} failed.`,
+        ])
+      }
+
+      setFireStatus(succeeded > 0 ? 'done' : 'error')
+      if (succeeded > 0) {
         if (memoryId) {
           window.bmp?.markPromptFired?.({ id: memoryId, aspectRatio })
           window.bmp?.getMemoryStats?.().then((s: { total: number; fired: number }) => setMemoryStats(s))
