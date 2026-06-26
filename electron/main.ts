@@ -503,7 +503,7 @@ function createWindow(): BrowserWindow {
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 16 },
     webPreferences: {
-      preload: join(__dirname, '../preload/preload.mjs'),
+      preload: join(__dirname, '../preload/preload.cjs'),
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
