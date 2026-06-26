@@ -435,7 +435,7 @@ const VALID_RESOLUTIONS = ['1k', '2k'] as const
 const VALID_ASPECT_RATIOS = ['9:16', '4:5', '1:1', '16:9', '1:2', '2:1'] as const
 
 ipcMain.handle('fire-higgsfield', async (event, { prompt, aspectRatio, products, resolution }: { prompt: string; aspectRatio: string; products: string[]; resolution?: string }) => {
-  if (typeof prompt !== 'string' || prompt.trim().length === 0 || prompt.length > 4000) {
+  if (typeof prompt !== 'string' || prompt.trim().length === 0 || prompt.length > 12000) {
     throw new Error('Invalid prompt')
   }
   const safeResolution = VALID_RESOLUTIONS.includes(resolution as typeof VALID_RESOLUTIONS[number]) ? resolution : '1k'
