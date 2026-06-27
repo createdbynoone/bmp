@@ -157,7 +157,7 @@ export function HiggsfieldButton({ status, progress, onClick, disabled, aspectRa
               <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
                 <path d="M2 7l3.5 3.5 6.5-6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
               </svg>
-              <span className="text-[12.7px] font-heading font-semibold uppercase tracking-widest">Done — check Desktop</span>
+              <span className="text-[12.7px] font-heading font-semibold uppercase tracking-widest">Done</span>
             </>
           ) : status === 'error' ? (
             <span className="text-[12.7px] font-heading font-semibold uppercase tracking-widest text-red-400">Error — retry</span>
