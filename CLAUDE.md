@@ -4,7 +4,7 @@ Electron app para generar prompts de marketing de prendas Brotherhood y disparar
 
 **Dev:** `npm run dev`
 **Release:** `GH_TOKEN=$(gh auth token) bash scripts/publish.sh`
-**Versión actual:** `1.4.0` (2026-07-02)
+**Versión actual:** `1.4.1` (2026-07-02)
 
 ## Stack
 - Electron 43 + electron-vite 5 + vite 7 + React 18 + Tailwind
