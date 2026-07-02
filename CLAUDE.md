@@ -3,14 +3,17 @@
 Electron app para generar prompts de marketing de prendas Brotherhood y dispararlos a providers de imagen/video.
 
 **Dev:** `npm run dev`
-**Release:** `GH_TOKEN=ghp_... bash scripts/publish.sh`
-**Versión actual:** `1.3.9`
+**Release:** `GH_TOKEN=$(gh auth token) bash scripts/publish.sh`
+**Versión actual:** `1.4.0` (2026-07-02)
 
 ## Stack
-- Electron 31 + electron-vite + React 18 + Tailwind
-- electron-builder 24 (DMG + ZIP, arm64 + x64)
+- Electron 43 + electron-vite 5 + vite 7 + React 18 + Tailwind
+- electron-builder 26 (DMG + ZIP, arm64 + x64) — **el tag debe existir en el remoto antes de publicar** (422 "valid tag" si no)
 - electron-updater 6
-- @anthropic-ai/sdk `claude-sonnet-4-6` con visión
+- @anthropic-ai/sdk 0.109+ (`claude-sonnet-4-6` con visión) — <0.40 rompe en Electron 43 (gunzip "Premature close")
+- **Electron 32+ eliminó `File.path`** — drag & drop usa `webUtils.getPathForFile()` expuesto como `window.bmp.getPathForFile`
+- zoomFactor 1.1 global (+10% UI, en webPreferences + did-finish-load); will-navigate prevented + setWindowOpenHandler deny
+- Contraste: text-secondary #9A9A9A / text-muted #666666; titlebar h-11 alineado a semáforos
 
 ## Modos
 
@@ -64,15 +67,17 @@ preload: join(__dirname, '../preload/preload.cjs')
 - `get-output-path` / `set-output-path` / `open-folder-dialog`
 - `get-memory-stats` / `get-memory-entries` / `mark-prompt-fired`
 
-## Release
+## Release (electron-builder 26)
 ```bash
-# 1. Bump version en package.json
-# 2. git add + commit + push
-GH_TOKEN=ghp_<classic_token_repo_scope> bash scripts/publish.sh
+npm version X.Y.Z --no-git-tag-version
+git add package.json package-lock.json && git commit -m "vX.Y.Z" && git push
+git tag vX.Y.Z && git push origin vX.Y.Z   # OBLIGATORIO: tag en remoto antes de publicar
+GH_TOKEN=$(gh auth token) bash scripts/publish.sh
 ```
-- Token **classic** con scope `repo` (fine-grained → 403)
+- Token **classic** con scope `repo` (fine-grained → 403); `gh auth token` funciona
 - Token inline, nunca con `export` (no se propaga al subproceso bash)
 - `releaseType: "release"` en build.publish → no drafts
+- Verificar que `latest-mac.yml` quede en los assets — si el publish falla a medias, re-correr `publish.sh` (sobrescribe assets y regenera el yml con sha512 consistentes)
 
 ## Auto-update (sin code signing)
 `hdiutil attach` → `ditto` → `hdiutil detach` → `app.relaunch()`
