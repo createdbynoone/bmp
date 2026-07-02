@@ -671,7 +671,7 @@ async function pollPOYOTask(
     const res = await fetch(`https://api.poyo.ai/api/generate/status/${taskId}`, {
       headers: { Authorization: `Bearer ${apiKey}` },
     })
-    const d = await res.json() as { data?: { status: string; progress?: number; files?: Array<{ file_url: string; file_type: string }> }; error?: { message: string } }
+    const d = await res.json() as { data?: { status: string; progress?: number; files?: Array<{ file_url: string; file_type: string }>; error_message?: string }; error?: { message: string } }
     const task = d.data
     if (!task) { sendProgress(`Poll error: ${d.error?.message ?? 'no data'}`); await new Promise((r) => setTimeout(r, 5000)); continue }
     const pct = task.progress ?? 0
@@ -681,7 +681,9 @@ async function pollPOYOTask(
       lastStatus = task.status; lastPct = pct
     }
     if (['finished', 'completed', 'succeeded'].includes(task.status)) return task.files ?? []
-    if (['failed', 'error'].includes(task.status)) throw new Error(`Generation ${task.status}`)
+    if (['failed', 'error'].includes(task.status)) {
+      throw new Error(task.error_message ? `POYO: ${task.error_message}` : `Generation ${task.status}`)
+    }
     await new Promise((r) => setTimeout(r, 5000))
   }
   throw new Error('Timeout — task exceeded 10 minutes')
