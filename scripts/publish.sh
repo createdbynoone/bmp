@@ -1,15 +1,15 @@
 #!/bin/bash
-# Builds and publishes each arch sequentially to avoid sha512 mismatch
-# caused by parallel code-signing when using --publish always directly.
+# Single electron-builder invocation: package.json declares arch:["arm64","x64"]
+# in its targets, so CLI --arm64/--x64 flags do NOT filter — running the builder
+# twice builds BOTH arches twice (each ad-hoc signed differently) and leaves
+# GitHub with assets mixed from two build states, so latest-mac.yml sha512
+# never matches. One run = one build state = consistent yml + assets.
 set -e
 
 echo "→ Building renderer / main / preload..."
 npx electron-vite build
 
-echo "→ Publishing arm64..."
-npx electron-builder --mac --arm64 --publish always
-
-echo "→ Publishing x64..."
-npx electron-builder --mac --x64 --publish always
+echo "→ Building + publishing arm64 & x64 (single run)..."
+npx electron-builder --mac --publish always
 
 echo "✓ Release complete"
