@@ -14,7 +14,9 @@ export function DropZone({ label, multiple = false, files, onFiles }: DropZonePr
     (e: React.DragEvent) => {
       e.preventDefault()
       setDragging(false)
-      const dropped = Array.from(e.dataTransfer.files).map((f) => f.path)
+      const dropped = Array.from(e.dataTransfer.files)
+        .map((f) => { try { return window.bmp.getPathForFile(f) } catch { return '' } })
+        .filter(Boolean)
       if (!dropped.length) return
       onFiles(multiple ? [...files, ...dropped] : dropped)
     },

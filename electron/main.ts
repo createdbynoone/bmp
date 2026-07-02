@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, shell, nativeImage, protocol, net, Menu, d
 import { join } from 'path'
 import { readFileSync, writeFileSync, createWriteStream } from 'fs'
 import { homedir } from 'os'
-import { execFile } from 'child_process'
+import { execFile, exec } from 'child_process'
 import { promisify } from 'util'
 import https from 'https'
 import Anthropic from '@anthropic-ai/sdk'
@@ -182,6 +182,7 @@ function buildMemoryContext(): string {
 }
 
 const execFileAsync = promisify(execFile)
+const execAsync = promisify(exec)
 
 // Electron doesn't inherit the shell PATH — resolve common binary locations manually
 const SHELL_PATH = [
@@ -378,24 +379,17 @@ ipcMain.handle('get-memory-stats', () => {
   }
 })
 
+ipcMain.handle('get-memory-entries', () => {
+  const memory = loadMemory()
+  return [...memory.entries].reverse()
+})
+
 ipcMain.handle('check-higgsfield-auth', async () => {
-  try {
-    const credsPath = join(homedir(), '.config', 'higgsfield', 'credentials.json')
-    const raw = readFileSync(credsPath, 'utf-8')
-    const creds = JSON.parse(raw)
-    return { authenticated: !!(creds.access_token) }
-  } catch {
-    return { authenticated: false }
-  }
+  return { authenticated: !!process.env.GEMINI_API_KEY }
 })
 
 ipcMain.handle('higgsfield-login', async () => {
-  try {
-    execFile('higgsfield', ['auth', 'login'], { env: shellEnv() })
-    return { ok: true }
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) }
-  }
+  return { ok: false, error: 'Add GEMINI_API_KEY to ~/.bmp.env' }
 })
 
 function downloadFile(url: string, destPath: string): Promise<void> {
@@ -453,78 +447,389 @@ function downloadDmgWithProgress(
 }
 
 ipcMain.handle('get-higgsfield-credits', async () => {
-  try {
-    const { stdout } = await execFileAsync('higgsfield', ['account', 'status', '--json'], { env: shellEnv() })
-    const data = JSON.parse(stdout.trim())
-    return { credits: data.credits ?? 0, plan: data.subscription_plan_type ?? 'free' }
-  } catch {
-    return { credits: null, plan: null }
-  }
+  return { credits: null, plan: 'imagen-3' }
 })
 
-const VALID_RESOLUTIONS = ['1k', '2k'] as const
-const VALID_ASPECT_RATIOS = ['9:16', '4:5', '1:1', '16:9', '1:2', '2:1'] as const
+const GEMINI_IMAGE_MODEL = 'gemini-3-pro-image'
 
-ipcMain.handle('fire-higgsfield', async (event, { prompt, aspectRatio, products, resolution }: { prompt: string; aspectRatio: string; products: string[]; resolution?: string }) => {
+const HF_VALID_RESOLUTIONS = ['1k', '2k'] as const
+const HF_VALID_ASPECT_RATIOS = ['9:16', '4:5', '1:1', '16:9', '1:2', '2:1'] as const
+
+interface GeminiPart {
+  text?: string
+  inlineData?: { mimeType: string; data: string }
+}
+
+interface GeminiResponse {
+  candidates?: Array<{ content: { parts: GeminiPart[] } }>
+  error?: { code: number; message: string }
+}
+
+ipcMain.handle('fire-higgsfield', async (event, { prompt, aspectRatio, products, resolution, provider }: { prompt: string; aspectRatio: string; products: string[]; resolution?: string; provider?: string }) => {
   if (typeof prompt !== 'string' || prompt.trim().length === 0 || prompt.length > 12000) {
     throw new Error('Invalid prompt')
   }
-  const safeResolution = VALID_RESOLUTIONS.includes(resolution as typeof VALID_RESOLUTIONS[number]) ? resolution : '1k'
-  const safeAspectRatio = VALID_ASPECT_RATIOS.includes(aspectRatio as typeof VALID_ASPECT_RATIOS[number]) ? aspectRatio : '4:5'
   if (!Array.isArray(products) || products.length > 30) throw new Error('Invalid products')
 
+  const sendProgress = (line: string) => event.sender.send('higgsfield-progress', line)
   const timestamp = Date.now()
   const desktopPath = loadPrefs().outputPath
 
-  const sendProgress = (line: string) => {
-    event.sender.send('higgsfield-progress', line)
+  // ── Higgsfield CLI branch ──────────────────────────────────────────────────
+  if (provider === 'higgsfield') {
+    const safeRes = HF_VALID_RESOLUTIONS.includes(resolution as typeof HF_VALID_RESOLUTIONS[number]) ? resolution : '1k'
+    const safeRatio = HF_VALID_ASPECT_RATIOS.includes(aspectRatio as typeof HF_VALID_ASPECT_RATIOS[number]) ? aspectRatio : '4:5'
+
+    sendProgress('Starting Higgsfield generation...')
+
+    const args = [
+      'generate', 'create', 'nano_banana_2',
+      '--prompt', prompt,
+      '--resolution', safeRes || '1k',
+      '--aspect_ratio', safeRatio || '4:5',
+      '--wait',
+    ]
+
+    if (products.length > 0) {
+      for (const p of products) args.push('--image', p)
+      sendProgress(`Uploading ${products.length} product image${products.length > 1 ? 's' : ''} as reference...`)
+    }
+
+    try {
+      const { stdout, stderr } = await execFileAsync('higgsfield', args, { timeout: 300_000, env: shellEnv() })
+      const combined = (stdout + '\n' + stderr).trim()
+      if (combined) sendProgress(combined)
+
+      const cliError = combined.match(/\b(error|failed|failure|rejected|content.?policy|moderat|violat|unsafe|prohibited)\b/i)
+      if (cliError) {
+        const snippet = combined.slice(0, 200)
+        sendProgress(`Generation failed — ${snippet}`)
+        return { success: false, outputPath: '', error: snippet }
+      }
+
+      const urlMatch = combined.match(/https:\/\/\S+\.(png|jpg|jpeg|webp)/i)
+      if (urlMatch) {
+        const imageUrl = urlMatch[0]
+        const ext = imageUrl.split('.').pop()?.split('?')[0] ?? 'jpg'
+        const outputName = `bmp_${timestamp}.${ext}`
+        const outputPath = join(desktopPath, outputName)
+        sendProgress('Downloading to Desktop...')
+        await downloadFile(imageUrl, outputPath)
+        sendProgress(`Saved: ${outputName}`)
+        return { success: true, outputPath }
+      }
+
+      sendProgress('Generation failed — no image URL in CLI output')
+      return { success: false, outputPath: '', error: 'No image URL in output' }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      sendProgress(`Error: ${msg}`)
+      return { success: false, outputPath: '', error: msg }
+    }
   }
 
-  sendProgress('Starting Higgsfield generation...')
+  // ── Gemini branch ──────────────────────────────────────────────────────────
+  const apiKey = process.env.GEMINI_API_KEY
+  if (!apiKey) throw new Error('GEMINI_API_KEY not set — add it to ~/.bmp.env')
 
-  const args = [
-    'generate', 'create', 'nano_banana_2',
-    '--prompt', prompt,
-    '--resolution', safeResolution || '1k',
-    '--aspect_ratio', safeAspectRatio || '4:5',
-    '--wait',
-  ]
-
-  // Attach all product images as visual reference — CLI auto-uploads local paths
-  if (products && products.length > 0) {
-    for (const p of products) args.push('--image', p)
-    sendProgress(`Uploading ${products.length} product image${products.length > 1 ? 's' : ''} as reference...`)
+  // Encode product images as inline base64 parts
+  const productParts: Array<{ inlineData: { mimeType: string; data: string } }> = []
+  if (products.length > 0) {
+    sendProgress(`Encoding ${products.length} product image${products.length > 1 ? 's' : ''} as reference...`)
+    for (const p of products) {
+      const encoded = resizeAndEncode(p)
+      if (encoded) productParts.push({ inlineData: { mimeType: encoded.mediaType, data: encoded.b64 } })
+    }
   }
+
+  const textInstruction = productParts.length > 0
+    ? `The image${productParts.length > 1 ? 's' : ''} above show the Brotherhood garment. You MUST preserve the exact garment: same color, graphics, logos, and construction details. Generate the editorial fashion photo:\n\n${prompt}`
+    : prompt
+
+  const requestParts = [...productParts, { text: textInstruction }]
+
+  const imageConfig: Record<string, string> = {}
+  if (aspectRatio) imageConfig.aspectRatio = aspectRatio
+  if (resolution) imageConfig.imageSize = resolution
+
+  sendProgress(`Starting Gemini (${aspectRatio ?? ''}${resolution ? ' · ' + resolution.toUpperCase() : ''})...`)
 
   try {
-    const { stdout, stderr } = await execFileAsync('higgsfield', args, { timeout: 300_000, env: shellEnv() })
-    const combined = (stdout + '\n' + stderr).trim()
-    if (combined) sendProgress(combined)
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_IMAGE_MODEL}:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: requestParts }],
+          generationConfig: { responseModalities: ['IMAGE'], imageConfig },
+        }),
+      }
+    )
 
-    // Detect explicit CLI-level failure even when exit code was 0
-    const cliError = combined.match(/\b(error|failed|failure|rejected|content.?policy|moderat|violat|unsafe|prohibited)\b/i)
-    if (cliError) {
-      const snippet = combined.slice(0, 200)
-      sendProgress(`Generation failed — ${snippet}`)
-      return { success: false, outputPath: '', error: snippet }
+    const data = await res.json() as GeminiResponse
+
+    if (!res.ok) {
+      const msg = data.error?.message ?? `HTTP ${res.status}`
+      sendProgress(`API error: ${msg}`)
+      return { success: false, outputPath: '', error: msg }
     }
 
-    // Parse CDN URL from output (cloudfront or any https URL ending in image ext)
-    const urlMatch = combined.match(/https:\/\/\S+\.(png|jpg|jpeg|webp)/i)
-    if (urlMatch) {
-      const imageUrl = urlMatch[0]
-      const ext = imageUrl.split('.').pop()?.split('?')[0] ?? 'jpg'
-      const outputName = `bmp_${timestamp}.${ext}`
-      const outputPath = join(desktopPath, outputName)
-      sendProgress(`Downloading to Desktop...`)
-      await downloadFile(imageUrl, outputPath)
+    const responseParts = data.candidates?.[0]?.content?.parts ?? []
+    const imagePart = responseParts.find((p) => p.inlineData)
+
+    if (!imagePart?.inlineData) {
+      const textPart = responseParts.find((p) => p.text)
+      const hint = textPart?.text?.slice(0, 150) ?? 'No image in response — possible content policy rejection'
+      sendProgress(hint)
+      return { success: false, outputPath: '', error: hint }
+    }
+
+    const { mimeType, data: b64 } = imagePart.inlineData
+    const ext = mimeType === 'image/png' ? 'png' : 'jpg'
+    const outputName = `bmp_${timestamp}.${ext}`
+    const outputPath = join(desktopPath, outputName)
+
+    writeFileSync(outputPath, Buffer.from(b64, 'base64'))
+
+    // Report final dimensions
+    try {
+      const { stdout } = await execFileAsync('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', outputPath])
+      const w = stdout.match(/pixelWidth:\s*(\d+)/)?.[1]
+      const h = stdout.match(/pixelHeight:\s*(\d+)/)?.[1]
+      if (w && h) sendProgress(`Saved: ${outputName} · ${w}×${h}px`)
+      else sendProgress(`Saved: ${outputName}`)
+    } catch {
       sendProgress(`Saved: ${outputName}`)
-      return { success: true, outputPath }
     }
 
-    sendProgress('Generation failed — no image URL in CLI output (possible content policy or quota issue)')
-    return { success: false, outputPath: '', error: 'No image URL in output' }
+    return { success: true, outputPath }
   } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    sendProgress(`Error: ${msg}`)
+    return { success: false, outputPath: '', error: msg }
+  }
+})
+
+// ── POYO.ai shared utilities ───────────────────────────────────────────────────
+
+const MAX_FRAME_PX = 1280
+
+async function uploadFrameToPOYO(filePath: string, apiKey: string, index: number): Promise<string> {
+  // Resize frame before upload to reduce payload size
+  let b64: string
+  try {
+    const img = nativeImage.createFromPath(filePath)
+    if (!img.isEmpty()) {
+      const { width, height } = img.getSize()
+      const scale = Math.min(1, MAX_FRAME_PX / Math.max(width, height))
+      const resized = scale < 1
+        ? img.resize({ width: Math.round(width * scale), height: Math.round(height * scale), quality: 'best' })
+        : img
+      b64 = resized.toJPEG(90).toString('base64')
+    } else {
+      b64 = readFileSync(filePath).toString('base64')
+    }
+  } catch {
+    b64 = readFileSync(filePath).toString('base64')
+  }
+
+  const fileName = `frame_${index + 1}_${Date.now()}.jpg`
+  const res = await fetch('https://api.poyo.ai/api/common/upload/base64', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ base64_data: b64, file_name: fileName }),
+  })
+  const data = await res.json() as { success?: boolean; data?: { file_url: string }; error?: { message: string } }
+  if (!data.success || !data.data?.file_url) throw new Error(data.error?.message ?? 'Upload failed')
+  return data.data.file_url
+}
+
+// Upload multiple files in parallel, preserving order (critical for @Image index alignment)
+async function uploadFilesToPOYO(filePaths: string[], apiKey: string, sendProgress: (l: string) => void): Promise<string[]> {
+  if (filePaths.length === 0) return []
+  sendProgress(`Uploading ${filePaths.length} image${filePaths.length > 1 ? 's' : ''} to POYO...`)
+  const results = await Promise.allSettled(filePaths.map((f, i) => uploadFrameToPOYO(f, apiKey, i)))
+  const failures = results.filter((r) => r.status === 'rejected')
+  if (failures.length > 0) {
+    const err = (failures[0] as PromiseRejectedResult).reason
+    throw new Error(`Upload failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+  sendProgress(`${filePaths.length} image${filePaths.length > 1 ? 's' : ''} uploaded ✓`)
+  return results.map((r) => (r as PromiseFulfilledResult<string>).value)
+}
+
+// Shared POYO task poller
+async function pollPOYOTask(
+  taskId: string, apiKey: string,
+  sendProgress: (l: string) => void
+): Promise<Array<{ file_url: string; file_type: string }>> {
+  await new Promise((r) => setTimeout(r, 8000))
+  let lastStatus = ''; let lastPct = -1
+  const startTs = Date.now()
+  for (let i = 0; i < 120; i++) {
+    const res = await fetch(`https://api.poyo.ai/api/generate/status/${taskId}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    })
+    const d = await res.json() as { data?: { status: string; progress?: number; files?: Array<{ file_url: string; file_type: string }> }; error?: { message: string } }
+    const task = d.data
+    if (!task) { sendProgress(`Poll error: ${d.error?.message ?? 'no data'}`); await new Promise((r) => setTimeout(r, 5000)); continue }
+    const pct = task.progress ?? 0
+    const elapsed = Math.round((Date.now() - startTs) / 1000)
+    if (task.status !== lastStatus || pct !== lastPct) {
+      sendProgress(`${task.status}${pct > 0 ? ` ${pct}%` : ''} · ${elapsed}s`)
+      lastStatus = task.status; lastPct = pct
+    }
+    if (['finished', 'completed', 'succeeded'].includes(task.status)) return task.files ?? []
+    if (['failed', 'error'].includes(task.status)) throw new Error(`Generation ${task.status}`)
+    await new Promise((r) => setTimeout(r, 5000))
+  }
+  throw new Error('Timeout — task exceeded 10 minutes')
+}
+
+// ── POYO.ai Nano Banana 2 — image generation ───────────────────────────────────
+
+const NB2_RATIOS = ['9:16', '4:5', '3:4', '1:1', '16:9'] as const
+
+ipcMain.handle('fire-poyo-image', async (event, { prompt, products, aspectRatio, resolution }: {
+  prompt: string; products: string[]; aspectRatio: string; resolution: string
+}) => {
+  if (typeof prompt !== 'string' || prompt.trim().length === 0) throw new Error('Invalid prompt')
+  if (!Array.isArray(products) || products.length > 14) throw new Error('Invalid products')
+
+  const apiKey = process.env.POYO_API_KEY
+  if (!apiKey) throw new Error('POYO_API_KEY not set — add it to ~/.bmp.env')
+
+  const timestamp = Date.now()
+  const desktopPath = loadPrefs().outputPath
+  const sendProgress = (line: string) => event.sender.send('higgsfield-progress', line)
+  const safeSize = NB2_RATIOS.includes(aspectRatio as typeof NB2_RATIOS[number]) ? aspectRatio : '3:4'
+  const safeRes = ['1k', '2k', '4k'].includes(resolution) ? resolution.toUpperCase() : '2K'
+
+  // Upload product images for reference
+  let imageUrls: string[] = []
+  try {
+    imageUrls = await uploadFilesToPOYO(products, apiKey, sendProgress)
+  } catch (err) {
+    sendProgress(err instanceof Error ? err.message : String(err))
+    return { success: false, outputPath: '', error: String(err) }
+  }
+
+  // Use edit model when product images provided (better adherence to reference)
+  const model = imageUrls.length > 0 ? 'nano-banana-2-edit' : 'nano-banana-2'
+  const input: Record<string, unknown> = { prompt, size: safeSize, resolution: safeRes }
+  if (imageUrls.length > 0) input.image_urls = imageUrls
+
+  sendProgress(`Submitting Nano Banana 2 (${safeSize} · ${safeRes})...`)
+
+  const submitRes = await fetch('https://api.poyo.ai/api/generate/submit', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, input }),
+  })
+  const submitData = await submitRes.json() as { code?: number; data?: { task_id: string }; error?: { message: string } }
+  if (!submitRes.ok || !submitData.data?.task_id) {
+    const msg = submitData.error?.message ?? `HTTP ${submitRes.status}`
+    sendProgress(`Submit error: ${msg}`)
+    return { success: false, outputPath: '', error: msg }
+  }
+
+  sendProgress(`Generating... (${submitData.data.task_id})`)
+
+  try {
+    const files = await pollPOYOTask(submitData.data.task_id, apiKey, sendProgress)
+    const imgFile = files.find((f) => f.file_type === 'image' || f.file_url.match(/\.(jpg|jpeg|png|webp)/i))
+    if (!imgFile) { sendProgress('No image in response'); return { success: false, outputPath: '', error: 'No image file' } }
+    const ext = imgFile.file_url.split('.').pop()?.split('?')[0] ?? 'jpg'
+    const outputName = `bmp_${timestamp}.${ext}`
+    const outputPath = join(desktopPath, outputName)
+    sendProgress('Downloading image...')
+    await downloadFile(imgFile.file_url, outputPath)
+    try {
+      const { stdout } = await execFileAsync('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', outputPath])
+      const w = stdout.match(/pixelWidth:\s*(\d+)/)?.[1]; const h = stdout.match(/pixelHeight:\s*(\d+)/)?.[1]
+      sendProgress(`Saved: ${outputName}${w && h ? ` · ${w}×${h}px` : ''}`)
+    } catch { sendProgress(`Saved: ${outputName}`) }
+    return { success: true, outputPath }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    sendProgress(`Error: ${msg}`)
+    return { success: false, outputPath: '', error: msg }
+  }
+})
+
+ipcMain.handle('fire-video', async (event, { prompt, products: frames, videoModel, aspectRatio, resolution, duration, generateAudio }: {
+  prompt: string; products: string[]; videoModel: string; aspectRatio: string; resolution: string; duration: number; generateAudio: boolean
+}) => {
+  if (typeof prompt !== 'string' || prompt.trim().length === 0) throw new Error('Invalid prompt')
+  if (!Array.isArray(frames) || frames.length > 9) throw new Error('Invalid frames')
+
+  const apiKey = process.env.POYO_API_KEY
+  if (!apiKey) throw new Error('POYO_API_KEY not set — add it to ~/.bmp.env')
+
+  const timestamp = Date.now()
+  const desktopPath = loadPrefs().outputPath
+  const sendProgress = (line: string) => event.sender.send('higgsfield-progress', line)
+
+  // Validate @ImageN tags in prompt match available frames
+  const tagRefs = [...prompt.matchAll(/@Image(\d+)/gi)].map((m) => parseInt(m[1]))
+  const maxTag = tagRefs.length > 0 ? Math.max(...tagRefs) : 0
+  if (maxTag > frames.length) {
+    sendProgress(`Warning: prompt references @Image${maxTag} but only ${frames.length} frame${frames.length !== 1 ? 's' : ''} provided`)
+  }
+
+  // Upload frames in parallel — order is critical (@Image1 = frames[0])
+  let referenceImageUrls: string[] = []
+  if (frames.length > 0) {
+    try {
+      referenceImageUrls = await uploadFilesToPOYO(frames, apiKey, sendProgress)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      sendProgress(msg)
+      return { success: false, outputPath: '', error: msg }
+    }
+  }
+
+  // Build request input
+  const input: Record<string, unknown> = {
+    prompt,
+    resolution,
+    duration,
+    generate_audio: generateAudio,
+  }
+  if (aspectRatio !== 'auto') input.aspect_ratio = aspectRatio
+  if (referenceImageUrls.length > 0) input.reference_image_urls = referenceImageUrls
+
+  sendProgress(`Submitting to Seedance 2 (${aspectRatio} · ${resolution} · ${duration}s)...`)
+
+  // Submit task
+  const submitRes = await fetch('https://api.poyo.ai/api/generate/submit', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: videoModel, input }),
+  })
+  const submitData = await submitRes.json() as { code?: number; data?: { task_id: string; status: string }; error?: { message: string } }
+
+  if (!submitRes.ok || !submitData.data?.task_id) {
+    const msg = submitData.error?.message ?? `HTTP ${submitRes.status}`
+    sendProgress(`Submit error: ${msg}`)
+    return { success: false, outputPath: '', error: msg }
+  }
+
+  const taskId = submitData.data.task_id
+  sendProgress(`Generating... (task: ${taskId})`)
+
+  try {
+    const files = await pollPOYOTask(taskId, apiKey, sendProgress)
+    const videoFile = files.find((f) => f.file_type === 'video' || f.file_url.match(/\.mp4|\.mov/i))
+    if (!videoFile) { sendProgress('No video file in response'); return { success: false, outputPath: '', error: 'No video file' } }
+    const outputName = `bmp_video_${timestamp}.mp4`
+    const outputPath = join(desktopPath, outputName)
+    sendProgress('Downloading video...')
+    await downloadFile(videoFile.file_url, outputPath)
+    sendProgress(`Saved: ${outputName}`)
+    return { success: true, outputPath }
+  } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     sendProgress(`Error: ${msg}`)
     return { success: false, outputPath: '', error: msg }
@@ -545,8 +850,17 @@ function createWindow(): BrowserWindow {
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
+      zoomFactor: 1.1,
     },
   })
+
+  // webPreferences zoomFactor is unreliable on first load — enforce it
+  win.webContents.on('did-finish-load', () => {
+    win.webContents.setZoomFactor(1.1)
+  })
+
+  win.webContents.on('will-navigate', e => e.preventDefault())
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
 
   if (process.env.ELECTRON_RENDERER_URL) {
     win.loadURL(process.env.ELECTRON_RENDERER_URL)

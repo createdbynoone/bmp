@@ -21,16 +21,16 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.19",
-    "electron": "^31.0.0",
-    "electron-builder": "^24.13.3",
-    "electron-vite": "^2.3.0",
+    "electron": "^43.0.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
     "postcss": "^8.4.38",
     "tailwindcss": "^3.4.4",
     "typescript": "^5.4.5",
-    "vite": "^5.3.1"
+    "vite": "^7.3.6"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.24.3",
+    "@anthropic-ai/sdk": "^0.109.1",
     "@higgsfield/client": "^0.2.1",
     "electron-updater": "^6.8.9",
     "react": "^18.3.1",
@@ -72,8 +72,17 @@
         "height": 380
       },
       "contents": [
-        { "x": 130, "y": 216, "type": "file" },
-        { "x": 410, "y": 216, "type": "link", "path": "/Applications" }
+        {
+          "x": 130,
+          "y": 216,
+          "type": "file"
+        },
+        {
+          "x": 410,
+          "y": 216,
+          "type": "link",
+          "path": "/Applications"
+        }
       ],
       "iconSize": 80
     },

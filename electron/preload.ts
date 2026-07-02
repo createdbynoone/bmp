@@ -1,11 +1,21 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 contextBridge.exposeInMainWorld('bmp', {
+  // Electron 32+ removed File.path from the renderer — this resolves the
+  // absolute path of files dragged in from Finder
+  getPathForFile: (file: File) => webUtils.getPathForFile(file),
+
   generatePrompt: (data: { refs: string[]; products: string[]; description: string }) =>
     ipcRenderer.invoke('generate-prompt', data),
 
-  fireHighsfield: (data: { prompt: string; aspectRatio: string; products: string[]; resolution: string }) =>
+  fireHighsfield: (data: { prompt: string; aspectRatio: string; products: string[]; resolution: string; provider?: string }) =>
     ipcRenderer.invoke('fire-higgsfield', data),
+
+  fireVideo: (data: { prompt: string; products: string[]; videoModel: string; aspectRatio: string; resolution: string; duration: number; generateAudio: boolean }) =>
+    ipcRenderer.invoke('fire-video', data),
+
+  firePoyoImage: (data: { prompt: string; products: string[]; aspectRatio: string; resolution: string }) =>
+    ipcRenderer.invoke('fire-poyo-image', data),
 
   getHiggsfieldCredits: () =>
     ipcRenderer.invoke('get-higgsfield-credits'),
@@ -15,6 +25,9 @@ contextBridge.exposeInMainWorld('bmp', {
 
   getMemoryStats: () =>
     ipcRenderer.invoke('get-memory-stats'),
+
+  getMemoryEntries: () =>
+    ipcRenderer.invoke('get-memory-entries'),
 
   checkHiggsfieldAuth: () =>
     ipcRenderer.invoke('check-higgsfield-auth'),

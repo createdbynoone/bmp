@@ -25,6 +25,9 @@ export default defineConfig({
   },
   renderer: {
     root: 'src',
+    server: {
+      port: 5274,
+    },
     build: {
       rollupOptions: {
         input: resolve('src/index.html'),
