@@ -3,8 +3,8 @@
 Electron app para generar prompts de marketing de prendas Brotherhood y dispararlos a providers de imagen/video.
 
 **Dev:** `npm run dev`
-**Release:** `GH_TOKEN=$(gh auth token) bash scripts/publish.sh`
-**Versión actual:** `1.4.1` (2026-07-02)
+**Release:** `bash scripts/publish.sh` (build local + subida via gh — ver sección Release)
+**Versión actual:** `1.4.1` (2026-07-02: pollPOYOTask muestra el `error_message` de POYO en fallos)
 
 ## Stack
 - Electron 43 + electron-vite 5 + vite 7 + React 18 + Tailwind
@@ -71,13 +71,14 @@ preload: join(__dirname, '../preload/preload.cjs')
 ```bash
 npm version X.Y.Z --no-git-tag-version
 git add package.json package-lock.json && git commit -m "vX.Y.Z" && git push
-git tag vX.Y.Z && git push origin vX.Y.Z   # OBLIGATORIO: tag en remoto antes de publicar
-GH_TOKEN=$(gh auth token) bash scripts/publish.sh
+git tag vX.Y.Z && git push origin vX.Y.Z
+bash scripts/publish.sh   # usa gh auth — no necesita GH_TOKEN
 ```
-- Token **classic** con scope `repo` (fine-grained → 403); `gh auth token` funciona
-- Token inline, nunca con `export` (no se propaga al subproceso bash)
-- `releaseType: "release"` en build.publish → no drafts
-- Verificar que `latest-mac.yml` quede en los assets — si el publish falla a medias, re-correr `publish.sh` (sobrescribe assets y regenera el yml con sha512 consistentes)
+- `publish.sh` (2026-07-02, determinista): construye con `electron-builder --mac --publish never` (una sola invocación, ambas arquitecturas), auto-verifica sha512 del `latest-mac.yml` vs zips locales, y sube los 9 assets con `gh release upload --clobber`
+- **NO usar `--publish always`**: el publisher de GitHub de electron-builder corre tasks duplicados que se sobreescriben entre sí → assets inconsistentes con el yml. Tampoco correr el builder una vez por arch: los targets declaran `arch:["arm64","x64"]`, así que `--arm64`/`--x64` no filtran y cada pasada construye ambas con firma ad-hoc distinta
+- Verificar release sin descargar: `gh api repos/createdbynoone/bmp/releases/tags/vX.Y.Z --jq '.assets[] | "\(.name) \(.digest)"'` vs `openssl dgst -sha256` local
+- Si el publish falla a medias: borrar TODOS los assets (`gh release delete-asset ... --yes`) y re-correr limpio
+- Correr publish con log a archivo, nunca con `| tail` (enmascara el exit code)
 
 ## Auto-update (sin code signing)
 `hdiutil attach` → `ditto` → `hdiutil detach` → `app.relaunch()`
