@@ -1,17 +1,15 @@
 import React from 'react'
 
 type Status = 'idle' | 'loading' | 'done' | 'error'
-export type Provider = 'higgsfield' | 'gemini' | 'poyo'
+export type Provider = 'higgsfield' | 'poyo'
 export type Mode = 'image' | 'video'
 
-const HF_RATIOS = ['9:16', '4:5', '1:1'] as const
-const GEMINI_RATIOS = ['9:16', '3:4', '1:1'] as const
-const NB2_RATIOS = ['9:16', '4:5', '3:4', '1:1', '16:9'] as const
+const IMAGE_RATIOS = ['9:16', '4:5', '1:1', '16:9'] as const
 const HF_RESOLUTIONS = ['1k', '2k'] as const
 const IMAGE_RESOLUTIONS = ['1k', '2k', '4k'] as const
 
-const VIDEO_RATIOS = ['9:16', '16:9', '1:1', 'auto'] as const
-const VIDEO_RESOLUTIONS = ['720p', '1080p', '4k'] as const
+const VIDEO_RATIOS = ['9:16', '16:9', 'auto'] as const
+const VIDEO_RESOLUTIONS = ['720p', '1080p'] as const
 const VIDEO_DURATIONS = [5, 10, 15] as const
 
 const VARIATIONS = [1, 2, 3, 4] as const
@@ -20,6 +18,7 @@ type Variations = typeof VARIATIONS[number]
 interface HiggsfieldButtonProps {
   status: Status
   onClick: () => void
+  onAngles: () => void
   disabled: boolean
   mode: Mode
 
@@ -42,8 +41,6 @@ interface HiggsfieldButtonProps {
   onVideoResolution: (r: string) => void
   duration: number
   onDuration: (d: number) => void
-  generateAudio: boolean
-  onGenerateAudio: (a: boolean) => void
 }
 
 function HiggsfieldLogo() {
@@ -54,17 +51,6 @@ function HiggsfieldLogo() {
         <circle cx="12" cy="12" r="2.5" fill="currentColor"/>
       </svg>
       <span className="font-sans font-semibold text-[14.7px] tracking-wide">Higgsfield</span>
-    </span>
-  )
-}
-
-function GeminiLogo() {
-  return (
-    <span className="flex items-center gap-2">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
-        <path d="M12 2C12 2 14.5 9.5 22 12C14.5 14.5 12 22 12 22C12 22 9.5 14.5 2 12C9.5 9.5 12 2 12 2Z" fill="currentColor"/>
-      </svg>
-      <span className="font-sans font-semibold text-[14.7px] tracking-wide">Gemini</span>
     </span>
   )
 }
@@ -111,9 +97,9 @@ function AccentPill({ active, disabled: dis, onClick: h, children }: { active: b
 }
 
 export function HiggsfieldButton({
-  status, onClick, disabled, mode,
+  status, onClick, onAngles, disabled, mode,
   provider, onProvider, aspectRatio, onAspectRatio, resolution, onResolution, variations, onVariations,
-  videoModel, onVideoModel, videoAspectRatio, onVideoAspectRatio, videoResolution, onVideoResolution, duration, onDuration, generateAudio, onGenerateAudio,
+  videoModel, onVideoModel, videoAspectRatio, onVideoAspectRatio, videoResolution, onVideoResolution, duration, onDuration,
 }: HiggsfieldButtonProps) {
   const isLoading = status === 'loading'
   const div = <div className="w-px h-4 bg-border flex-shrink-0" />
@@ -124,15 +110,15 @@ export function HiggsfieldButton({
         <>
           {/* Provider */}
           <div className="flex items-center bg-white/5 border border-border rounded-md p-[3px] flex-shrink-0">
-            {(['higgsfield', 'gemini', 'poyo'] as Provider[]).map((p) => (
+            {(['higgsfield', 'poyo'] as Provider[]).map((p) => (
               <button key={p} onClick={() => onProvider(p)} disabled={isLoading} className={`px-2.5 py-[5px] rounded-[4px] text-[11px] font-heading font-semibold uppercase tracking-widest transition-all duration-150 ${provider === p ? 'bg-white/15 text-white' : 'text-text-muted hover:text-white/60'} ${isLoading ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'}`}>
-                {p === 'higgsfield' ? 'HF' : p === 'gemini' ? 'AI' : 'NB2'}
+                {p === 'higgsfield' ? 'HF' : 'NB2'}
               </button>
             ))}
           </div>
           {div}
           <div className="flex items-center gap-1 flex-shrink-0">
-            {(provider === 'higgsfield' ? HF_RATIOS : provider === 'gemini' ? GEMINI_RATIOS : NB2_RATIOS).map((r) => (
+            {IMAGE_RATIOS.map((r) => (
               <Pill key={r} active={aspectRatio === r} disabled={isLoading} onClick={() => onAspectRatio(r)}>{r}</Pill>
             ))}
           </div>
@@ -148,6 +134,20 @@ export function HiggsfieldButton({
               <Pill key={v} active={variations === v} disabled={isLoading} onClick={() => onVariations(v)}>×{v}</Pill>
             ))}
           </div>
+          {div}
+          <button
+            onClick={onAngles}
+            disabled={disabled || isLoading}
+            title="Claude genera 4 variaciones de ángulo del prompt (close-up, rotación, low-angle...) y las dispara"
+            className={`flex items-center gap-1.5 px-2.5 py-[7px] rounded-md text-[11.7px] font-mono font-semibold tracking-wide border transition-all duration-150 flex-shrink-0 ${disabled || isLoading ? 'border-border text-text-muted cursor-not-allowed opacity-40' : 'border-accent/50 bg-accent/5 text-accent hover:bg-accent/15 hover:border-accent/80 cursor-pointer'}`}
+          >
+            <svg width="11" height="11" viewBox="0 0 14 14" fill="none">
+              <path d="M2 12L7 2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+              <path d="M2 12h10" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+              <path d="M9 12a5.5 5.5 0 0 0-2.8-4.8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+            </svg>
+            ANGLES ×4
+          </button>
         </>
       ) : (
         <>
@@ -177,10 +177,6 @@ export function HiggsfieldButton({
               <Pill key={d} active={duration === d} disabled={isLoading} onClick={() => onDuration(d)}>{d}s</Pill>
             ))}
           </div>
-          {div}
-          <button onClick={() => onGenerateAudio(!generateAudio)} disabled={isLoading} title={generateAudio ? 'Audio ON' : 'Audio OFF'} className={`px-2 py-[7px] rounded-md text-[13px] border transition-all duration-150 ${generateAudio ? 'border-accent/70 bg-accent/10 text-accent' : 'border-border text-text-muted hover:border-white/25'} ${isLoading ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'}`}>
-            {generateAudio ? '🔊' : '🔇'}
-          </button>
         </>
       )}
 
@@ -215,13 +211,11 @@ export function HiggsfieldButton({
             <HiggsfieldLogo />
             {variations > 1 && <span className="text-[11.7px] font-mono text-white/40 ml-1">×{variations}</span>}
           </>
-        ) : provider === 'gemini' ? (
+        ) : (
           <>
-            <GeminiLogo />
+            <NanoBananaLogo />
             {variations > 1 && <span className="text-[11.7px] font-mono text-white/40 ml-1">×{variations}</span>}
           </>
-        ) : (
-          <NanoBananaLogo />
         )}
       </button>
     </div>

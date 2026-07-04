@@ -4,37 +4,40 @@ Electron app para generar prompts de marketing de prendas Brotherhood y disparar
 
 **Dev:** `npm run dev`
 **Release:** `bash scripts/publish.sh` (build local + subida via gh — ver sección Release)
-**Versión actual:** `1.4.1` (2026-07-02: pollPOYOTask muestra el `error_message` de POYO en fallos)
+**Versión actual:** `1.5.0` (2026-07-03: tareas por modo en background al cambiar de pestaña, Angles ×4, modelo `claude-sonnet-5`, Gemini removido, POYO refs pre-upload + cap 14, ratios reducidos, audio de video siempre off)
 
 ## Stack
 - Electron 43 + electron-vite 5 + vite 7 + React 18 + Tailwind
 - electron-builder 26 (DMG + ZIP, arm64 + x64) — **el tag debe existir en el remoto antes de publicar** (422 "valid tag" si no)
 - electron-updater 6
-- @anthropic-ai/sdk 0.109+ (`claude-sonnet-4-6` con visión) — <0.40 rompe en Electron 43 (gunzip "Premature close")
+- @anthropic-ai/sdk 0.109+ (`claude-sonnet-5` con visión, constante `CLAUDE_MODEL` en main.ts) — <0.40 rompe en Electron 43 (gunzip "Premature close")
 - **Electron 32+ eliminó `File.path`** — drag & drop usa `webUtils.getPathForFile()` expuesto como `window.bmp.getPathForFile`
 - zoomFactor 1.1 global (+10% UI, en webPreferences + did-finish-load); will-navigate prevented + setWindowOpenHandler deny
 - Contraste: text-secondary #9A9A9A / text-muted #666666; titlebar h-11 alineado a semáforos
 
 ## Modos
 
-### Image (`[HF | AI | NB2]`)
-| Provider | Modelo | Ratios | Resoluciones | Variaciones |
-|---|---|---|---|---|
-| HF (Higgsfield) | nano_banana_2 CLI | 9:16 / 4:5 / 1:1 | 1k / 2k | ×1–4 |
-| AI (Gemini) | gemini-3-pro-image | 9:16 / 3:4 / 1:1 | 1k / 2k / 4k | ×1–4 |
-| NB2 (POYO) | nano-banana-2(-edit) | 9:16 / 4:5 / 3:4 / 1:1 / 16:9 | 1K / 2K / 4K | — |
+### Image (`[HF | NB2]`) — Gemini removido 2026-07-03
+Ratios unificados para ambos providers: **9:16 / 4:5 / 1:1 / 16:9** (default 4:5)
+| Provider | Modelo | Resoluciones | Variaciones |
+|---|---|---|---|
+| HF (Higgsfield) | nano_banana_2 CLI | 1k / 2k | ×1–4 |
+| NB2 (POYO, default) | nano-banana-2(-edit) | 1K / 2K / 4K | ×1–4 |
+
+**POYO límite duro: max 14 imágenes de referencia por request** (`POYO_MAX_REFS`). La app las recorta a 14 con warning en vez de fallar. Para disparos paralelos (variaciones/angles) las refs se suben UNA vez via `upload-poyo-refs` y las URLs se comparten (`imageUrls` en `fire-poyo-image`) — re-subir por tarea reventaba rate limits de POYO.
 
 ### Video (Seedance 2 / POYO)
 - El usuario escribe el prompt manualmente
 - Frames drag & drop (max 9) → referenciados con `@Image1`, `@Image2`...
 - Modelos: `seedance-2` (PRO) / `seedance-2-fast` (FAST)
-- Ratios: 9:16 / 16:9 / 1:1 / auto | Resoluciones: 720p / 1080p / 4k | Duración: 5/10/15s
+- Ratios: 9:16 / 16:9 / auto | Resoluciones: 720p / 1080p | Duración: 5/10/15s
+- Audio SIEMPRE apagado (`generate_audio: false` hardcoded en fire-video; toggle removido de la UI)
 
 ## Claves de entorno (`~/.bmp.env`)
 ```
-GEMINI_API_KEY=...
 POYO_API_KEY=...
 ```
+(GEMINI_API_KEY ya no se usa — provider Gemini removido)
 
 ## POYO API
 ```
@@ -58,12 +61,23 @@ output: { format: 'cjs', entryFileNames: '[name].cjs' }
 preload: join(__dirname, '../preload/preload.cjs')
 ```
 
+## Tareas en background por modo
+- `fireStatus`/`fireProgress` están **scoped por modo** (`imageFireStatus`/`videoFireStatus`, `imageProgress`/`videoProgress`) — cambiar de pestaña NO cancela ni oculta la tarea en curso
+- El canal `higgsfield-progress` emite `{ scope: 'image' | 'video', line }` (ya no un string plano) y el renderer enruta cada línea a su log
+- La pestaña con tarea activa muestra un punto accent pulsante
+
+## Angles ×4
+- Botón `ANGLES ×4` en la barra inferior (modo image, requiere prompt generado)
+- Handler `generate-angle-variations`: Claude reescribe solo [COMPOSITION]/[CAMERA] (y [LIGHTING] si el ángulo lo exige) → JSON estricto de 4 `{label, prompt}` → se disparan en paralelo con el provider activo
+
 ## IPC handlers (main.ts)
-- `generate-prompt` — Claude Sonnet 4.6 visión → prompt
-- `fire-higgsfield` — Higgsfield CLI o Gemini según `provider`
-- `fire-poyo-image` — POYO Nano Banana 2
+- `generate-prompt` — Claude Sonnet 5 visión → prompt
+- `generate-angle-variations` — Claude Sonnet 5 → 4 variaciones de ángulo del prompt
+- `fire-higgsfield` — Higgsfield CLI (solo HF; Gemini removido)
+- `fire-poyo-image` — POYO Nano Banana 2 (acepta `imageUrls` pre-subidas)
+- `upload-poyo-refs` — sube refs una vez, retorna URLs para fan-out paralelo
 - `fire-video` — POYO Seedance 2
-- `check-higgsfield-auth` — verifica GEMINI_API_KEY presente
+- `check-higgsfield-auth` — verifica POYO_API_KEY presente
 - `get-output-path` / `set-output-path` / `open-folder-dialog`
 - `get-memory-stats` / `get-memory-entries` / `mark-prompt-fired`
 

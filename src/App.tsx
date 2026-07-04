@@ -20,8 +20,8 @@ export default function App() {
   const [generateStatus, setGenerateStatus] = useState<GenerateStatus>('idle')
   const [error, setError] = useState('')
   const [memoryId, setMemoryId] = useState<string | null>(null)
-  const [provider, setProvider] = useState<Provider>('gemini')
-  const [aspectRatio, setAspectRatio] = useState('3:4')
+  const [provider, setProvider] = useState<Provider>('poyo')
+  const [aspectRatio, setAspectRatio] = useState('4:5')
   const [resolution, setResolution] = useState('2k')
   const [variations, setVariations] = useState(1)
   const [showHistory, setShowHistory] = useState(false)
@@ -33,12 +33,15 @@ export default function App() {
   const [videoAspectRatio, setVideoAspectRatio] = useState('9:16')
   const [videoResolution, setVideoResolution] = useState('1080p')
   const [duration, setDuration] = useState(5)
-  const [generateAudio, setGenerateAudio] = useState(true)
 
   // ── Shared state ──────────────────────────────────────────────────────────
+  // Fire status + progress are scoped per mode so switching tabs never
+  // interrupts or hides an in-flight task — it keeps running in background
   const [mode, setMode] = useState<Mode>('image')
-  const [fireStatus, setFireStatus] = useState<FireStatus>('idle')
-  const [fireProgress, setFireProgress] = useState<string[]>([])
+  const [imageFireStatus, setImageFireStatus] = useState<FireStatus>('idle')
+  const [videoFireStatus, setVideoFireStatus] = useState<FireStatus>('idle')
+  const [imageProgress, setImageProgress] = useState<string[]>([])
+  const [videoProgress, setVideoProgress] = useState<string[]>([])
   const [memoryStats, setMemoryStats] = useState<{ total: number; fired: number } | null>(null)
   const [credits, setCredits] = useState<{ credits: number | null; plan: string | null } | null>(null)
   const [appVersion, setAppVersion] = useState('')
@@ -47,8 +50,9 @@ export default function App() {
 
   useEffect(() => {
     if (!window.bmp) return
-    const cleanup = window.bmp.onHiggsfieldProgress((line) => {
-      setFireProgress((prev) => [...prev, line])
+    const cleanup = window.bmp.onHiggsfieldProgress((evt) => {
+      if (evt.scope === 'video') setVideoProgress((prev) => [...prev, evt.line])
+      else setImageProgress((prev) => [...prev, evt.line])
     })
     return cleanup
   }, [])
@@ -64,27 +68,20 @@ export default function App() {
 
   const handleProviderChange = (p: Provider) => {
     setProvider(p)
-    if (p === 'higgsfield') {
-      if (aspectRatio === '3:4' || aspectRatio === '16:9') setAspectRatio('4:5')
-      if (resolution === '4k') setResolution('2k')
-    } else if (p === 'gemini') {
-      if (aspectRatio === '4:5' || aspectRatio === '16:9') setAspectRatio('3:4')
-    }
-    // poyo (NB2) supports 9:16 / 4:5 / 3:4 / 1:1 / 16:9 — all are valid, no reset needed
-    setFireStatus('idle'); setFireProgress([])
+    // Both providers accept all IMAGE_RATIOS — only HF lacks 4k
+    if (p === 'higgsfield' && resolution === '4k') setResolution('2k')
+    setImageFireStatus('idle'); setImageProgress([])
   }
 
-  const handleModeChange = (m: Mode) => {
-    setMode(m)
-    setFireStatus('idle'); setFireProgress([])
-  }
+  // Switching tabs only changes the view — running tasks keep going in background
+  const handleModeChange = (m: Mode) => setMode(m)
 
   // ── Image: generate prompt ────────────────────────────────────────────────
   const canGenerate = refs.length > 0 && products.length > 0 && description.trim().length > 0
 
   const handleGenerate = async () => {
     if (!canGenerate) return
-    setGenerateStatus('loading'); setPrompt(''); setError(''); setFireStatus('idle'); setFireProgress([])
+    setGenerateStatus('loading'); setPrompt(''); setError(''); setImageFireStatus('idle'); setImageProgress([])
     try {
       const result = await window.bmp.generatePrompt({ refs, products, description })
       setPrompt(result.prompt); setMemoryId(result.memoryId); setGenerateStatus('done')
@@ -95,43 +92,67 @@ export default function App() {
   }
 
   // ── Image: fire ───────────────────────────────────────────────────────────
+  const markFired = () => {
+    if (!memoryId) return
+    window.bmp?.markPromptFired?.({ id: memoryId, aspectRatio })
+    window.bmp?.getMemoryStats?.().then((s: { total: number; fired: number }) => setMemoryStats(s))
+  }
+
+  // Fire N prompts in parallel with the active provider. For POYO, product refs
+  // are uploaded ONCE and their URLs shared across tasks — re-uploading the same
+  // images per parallel task bursts POYO's rate limits (max 14 refs per request)
+  const fireBatch = async (prompts: string[]): Promise<number> => {
+    let poyoUrls: string[] | undefined
+    if (provider === 'poyo' && products.length > 0 && prompts.length > 1) {
+      const { urls } = await window.bmp.uploadPoyoRefs({ products })
+      poyoUrls = urls
+    }
+    const settled = await Promise.allSettled(
+      prompts.map((p) =>
+        provider === 'poyo'
+          ? window.bmp.firePoyoImage({ prompt: p, products, aspectRatio, resolution, imageUrls: poyoUrls })
+          : window.bmp.fireHighsfield({ prompt: p, aspectRatio, products, resolution })
+      )
+    )
+    return settled.filter((s) => s.status === 'fulfilled' && s.value.success).length
+  }
+
   const handleFire = async () => {
     if (!prompt) return
-    setFireStatus('loading'); setFireProgress([])
+    setImageFireStatus('loading'); setImageProgress([])
     try {
-      if (provider === 'poyo') {
-        const result = await window.bmp.firePoyoImage({ prompt, products, aspectRatio, resolution })
-        setFireStatus(result.success ? 'done' : 'error')
-        if (result.success && memoryId) {
-          window.bmp?.markPromptFired?.({ id: memoryId, aspectRatio })
-          window.bmp?.getMemoryStats?.().then((s: { total: number; fired: number }) => setMemoryStats(s))
-        }
-      } else {
-        const settled = await Promise.allSettled(
-          Array.from({ length: variations }, () =>
-            window.bmp.fireHighsfield({ prompt, aspectRatio, products, resolution, provider })
-          )
-        )
-        const succeeded = settled.filter((s) => s.status === 'fulfilled' && s.value.success).length
-        const failed = variations - succeeded
-        if (variations > 1) {
-          setFireProgress((prev) => [...prev, failed === 0 ? `All ${variations} variations generated.` : succeeded === 0 ? `All ${variations} variations failed.` : `${succeeded}/${variations} generated — ${failed} failed.`])
-        }
-        setFireStatus(succeeded > 0 ? 'done' : 'error')
-        if (succeeded > 0 && memoryId) {
-          window.bmp?.markPromptFired?.({ id: memoryId, aspectRatio })
-          window.bmp?.getMemoryStats?.().then((s: { total: number; fired: number }) => setMemoryStats(s))
-        }
+      const succeeded = await fireBatch(Array.from({ length: variations }, () => prompt))
+      const failed = variations - succeeded
+      if (variations > 1) {
+        setImageProgress((prev) => [...prev, failed === 0 ? `All ${variations} variations generated.` : succeeded === 0 ? `All ${variations} variations failed.` : `${succeeded}/${variations} generated — ${failed} failed.`])
       }
+      setImageFireStatus(succeeded > 0 ? 'done' : 'error')
+      if (succeeded > 0) markFired()
     } catch (err) {
-      setFireStatus('error'); setFireProgress((prev) => [...prev, err instanceof Error ? err.message : 'Unknown error'])
+      setImageFireStatus('error'); setImageProgress((prev) => [...prev, err instanceof Error ? err.message : 'Unknown error'])
+    }
+  }
+
+  // ── Image: fire 4 angle variations (Claude rewrites camera work) ──────────
+  const handleFireAngles = async () => {
+    if (!prompt) return
+    setImageFireStatus('loading'); setImageProgress(['Generating angle variations with Claude...'])
+    try {
+      const { variants } = await window.bmp.generateAngleVariations({ prompt })
+      setImageProgress((prev) => [...prev, ...variants.map((v) => `∠ ${v.label}`), `Firing ${variants.length} angles...`])
+      const succeeded = await fireBatch(variants.map((v) => v.prompt))
+      setImageProgress((prev) => [...prev, succeeded === variants.length ? `All ${variants.length} angles generated.` : succeeded === 0 ? `All ${variants.length} angles failed.` : `${succeeded}/${variants.length} angles generated.`])
+      setImageFireStatus(succeeded > 0 ? 'done' : 'error')
+      if (succeeded > 0) markFired()
+    } catch (err) {
+      setImageFireStatus('error'); setImageProgress((prev) => [...prev, err instanceof Error ? err.message : 'Unknown error'])
     }
   }
 
   // ── Video: fire ───────────────────────────────────────────────────────────
   const handleFireVideo = async () => {
     if (!videoPrompt.trim()) return
-    setFireStatus('loading'); setFireProgress([])
+    setVideoFireStatus('loading'); setVideoProgress([])
     try {
       const result = await window.bmp.fireVideo({
         prompt: videoPrompt,
@@ -140,26 +161,26 @@ export default function App() {
         aspectRatio: videoAspectRatio,
         resolution: videoResolution,
         duration,
-        generateAudio,
       })
-      setFireStatus(result.success ? 'done' : 'error')
+      setVideoFireStatus(result.success ? 'done' : 'error')
     } catch (err) {
-      setFireStatus('error'); setFireProgress((prev) => [...prev, err instanceof Error ? err.message : 'Unknown error'])
+      setVideoFireStatus('error'); setVideoProgress((prev) => [...prev, err instanceof Error ? err.message : 'Unknown error'])
     }
   }
 
   const reset = () => {
     if (mode === 'image') {
       setRefs([]); setProducts([]); setDescription(''); setPrompt(''); setGenerateStatus('idle'); setMemoryId(null); setVariations(1); setError('')
+      setImageFireStatus('idle'); setImageProgress([])
     } else {
       setVideoPrompt(''); setFrames([])
+      setVideoFireStatus('idle'); setVideoProgress([])
     }
-    setFireStatus('idle'); setFireProgress([])
   }
 
   const footerLabel = mode === 'video'
     ? `seedance-2 · ${videoAspectRatio} · ${videoResolution} · ${duration}s`
-    : `${provider === 'higgsfield' ? 'higgsfield' : provider === 'gemini' ? 'gemini-3-pro' : 'nano-banana-2'} · ${aspectRatio} · ${resolution.toUpperCase()}`
+    : `${provider === 'higgsfield' ? 'higgsfield' : 'nano-banana-2'} · ${aspectRatio} · ${resolution.toUpperCase()}`
 
   const fireDisabled = mode === 'video' ? !videoPrompt.trim() : !prompt
 
@@ -191,18 +212,22 @@ export default function App() {
       {/* Mode tabs */}
       <div className="flex-shrink-0 px-4 pt-3 pb-0">
         <div className="flex items-center gap-1 bg-white/[0.04] border border-border rounded-lg p-1 w-fit">
-          {(['image', 'video'] as Mode[]).map((m) => (
-            <button
-              key={m}
-              onClick={() => handleModeChange(m)}
-              className={`
-                px-4 py-1.5 rounded-md text-[11.7px] font-heading font-semibold uppercase tracking-widest transition-all duration-150
-                ${mode === m ? 'bg-white/12 text-white' : 'text-text-muted hover:text-white/60'}
-              `}
-            >
-              {m === 'image' ? 'Image' : 'Video'}
-            </button>
-          ))}
+          {(['image', 'video'] as Mode[]).map((m) => {
+            const busy = m === 'image' ? imageFireStatus === 'loading' : videoFireStatus === 'loading'
+            return (
+              <button
+                key={m}
+                onClick={() => handleModeChange(m)}
+                className={`
+                  flex items-center gap-1.5 px-4 py-1.5 rounded-md text-[11.7px] font-heading font-semibold uppercase tracking-widest transition-all duration-150
+                  ${mode === m ? 'bg-white/12 text-white' : 'text-text-muted hover:text-white/60'}
+                `}
+              >
+                {m === 'image' ? 'Image' : 'Video'}
+                {busy && <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse flex-shrink-0" />}
+              </button>
+            )
+          })}
         </div>
       </div>
 
@@ -270,9 +295,9 @@ export default function App() {
 
             {prompt && <PromptOutput prompt={prompt} />}
 
-            {fireProgress.length > 0 && (
+            {imageProgress.length > 0 && (
               <div className="bg-[#0f0f0f] border border-border rounded-lg px-3 py-2 max-h-[80px] overflow-y-auto flex-shrink-0">
-                {fireProgress.map((line, i) => (
+                {imageProgress.map((line, i) => (
                   <p key={i} className="text-[11.7px] font-mono text-text-secondary leading-relaxed">{line}</p>
                 ))}
               </div>
@@ -290,7 +315,7 @@ export default function App() {
             onPrompt={setVideoPrompt}
             frames={frames}
             onFrames={setFrames}
-            progress={fireProgress}
+            progress={videoProgress}
           />
         )}
       </div>
@@ -298,8 +323,9 @@ export default function App() {
       {/* Bottom bar */}
       <div className="flex-shrink-0 border-t border-border px-4 py-3">
         <HiggsfieldButton
-          status={fireStatus}
+          status={mode === 'video' ? videoFireStatus : imageFireStatus}
           onClick={mode === 'video' ? handleFireVideo : handleFire}
+          onAngles={handleFireAngles}
           disabled={fireDisabled}
           mode={mode}
           provider={provider}
@@ -318,8 +344,6 @@ export default function App() {
           onVideoResolution={setVideoResolution}
           duration={duration}
           onDuration={setDuration}
-          generateAudio={generateAudio}
-          onGenerateAudio={setGenerateAudio}
         />
       </div>
 
@@ -348,8 +372,8 @@ export default function App() {
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
           <div className="bg-surface border border-border rounded-xl p-6 w-80 flex flex-col gap-4">
             <div className="flex flex-col gap-1">
-              <span className="font-heading font-bold text-text-primary text-[14.7px] uppercase tracking-widest">Gemini Auth</span>
-              <p className="text-[13.7px] text-text-secondary leading-relaxed">Agrega GEMINI_API_KEY a ~/.bmp.env para continuar.</p>
+              <span className="font-heading font-bold text-text-primary text-[14.7px] uppercase tracking-widest">POYO Auth</span>
+              <p className="text-[13.7px] text-text-secondary leading-relaxed">Agrega POYO_API_KEY a ~/.bmp.env para continuar.</p>
             </div>
             <button onClick={() => setShowLoginModal(false)} className="py-2 rounded-lg bg-white text-black text-[13.7px] font-heading font-semibold uppercase tracking-widest hover:bg-white/90 transition-colors">Listo</button>
           </div>

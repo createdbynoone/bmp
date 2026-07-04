@@ -5,9 +5,11 @@ electron.contextBridge.exposeInMainWorld("bmp", {
   // absolute path of files dragged in from Finder
   getPathForFile: (file) => electron.webUtils.getPathForFile(file),
   generatePrompt: (data) => electron.ipcRenderer.invoke("generate-prompt", data),
+  generateAngleVariations: (data) => electron.ipcRenderer.invoke("generate-angle-variations", data),
   fireHighsfield: (data) => electron.ipcRenderer.invoke("fire-higgsfield", data),
   fireVideo: (data) => electron.ipcRenderer.invoke("fire-video", data),
   firePoyoImage: (data) => electron.ipcRenderer.invoke("fire-poyo-image", data),
+  uploadPoyoRefs: (data) => electron.ipcRenderer.invoke("upload-poyo-refs", data),
   getHiggsfieldCredits: () => electron.ipcRenderer.invoke("get-higgsfield-credits"),
   markPromptFired: (data) => electron.ipcRenderer.invoke("mark-prompt-fired", data),
   getMemoryStats: () => electron.ipcRenderer.invoke("get-memory-stats"),
@@ -15,7 +17,7 @@ electron.contextBridge.exposeInMainWorld("bmp", {
   checkHiggsfieldAuth: () => electron.ipcRenderer.invoke("check-higgsfield-auth"),
   higgsfieldLogin: () => electron.ipcRenderer.invoke("higgsfield-login"),
   onHiggsfieldProgress: (cb) => {
-    electron.ipcRenderer.on("higgsfield-progress", (_event, line) => cb(line));
+    electron.ipcRenderer.on("higgsfield-progress", (_event, evt) => cb(evt));
     return () => electron.ipcRenderer.removeAllListeners("higgsfield-progress");
   },
   onUpdateStatus: (cb) => {

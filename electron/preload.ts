@@ -8,14 +8,20 @@ contextBridge.exposeInMainWorld('bmp', {
   generatePrompt: (data: { refs: string[]; products: string[]; description: string }) =>
     ipcRenderer.invoke('generate-prompt', data),
 
-  fireHighsfield: (data: { prompt: string; aspectRatio: string; products: string[]; resolution: string; provider?: string }) =>
+  generateAngleVariations: (data: { prompt: string }) =>
+    ipcRenderer.invoke('generate-angle-variations', data),
+
+  fireHighsfield: (data: { prompt: string; aspectRatio: string; products: string[]; resolution: string }) =>
     ipcRenderer.invoke('fire-higgsfield', data),
 
-  fireVideo: (data: { prompt: string; products: string[]; videoModel: string; aspectRatio: string; resolution: string; duration: number; generateAudio: boolean }) =>
+  fireVideo: (data: { prompt: string; products: string[]; videoModel: string; aspectRatio: string; resolution: string; duration: number }) =>
     ipcRenderer.invoke('fire-video', data),
 
-  firePoyoImage: (data: { prompt: string; products: string[]; aspectRatio: string; resolution: string }) =>
+  firePoyoImage: (data: { prompt: string; products: string[]; aspectRatio: string; resolution: string; imageUrls?: string[] }) =>
     ipcRenderer.invoke('fire-poyo-image', data),
+
+  uploadPoyoRefs: (data: { products: string[] }) =>
+    ipcRenderer.invoke('upload-poyo-refs', data),
 
   getHiggsfieldCredits: () =>
     ipcRenderer.invoke('get-higgsfield-credits'),
@@ -35,8 +41,8 @@ contextBridge.exposeInMainWorld('bmp', {
   higgsfieldLogin: () =>
     ipcRenderer.invoke('higgsfield-login'),
 
-  onHiggsfieldProgress: (cb: (line: string) => void) => {
-    ipcRenderer.on('higgsfield-progress', (_event, line) => cb(line))
+  onHiggsfieldProgress: (cb: (evt: { scope: 'image' | 'video'; line: string }) => void) => {
+    ipcRenderer.on('higgsfield-progress', (_event, evt) => cb(evt))
     return () => ipcRenderer.removeAllListeners('higgsfield-progress')
   },
 

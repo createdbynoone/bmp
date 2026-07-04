@@ -1,6 +1,6 @@
-import { ipcMain, app, dialog, protocol, net, BrowserWindow, nativeImage, Menu, shell } from "electron";
+import { ipcMain, app, dialog, protocol, net, BrowserWindow, Menu, nativeImage, shell } from "electron";
 import { join } from "path";
-import { writeFileSync, readFileSync, createWriteStream } from "fs";
+import { readFileSync, writeFileSync, createWriteStream } from "fs";
 import { homedir } from "os";
 import { execFile, exec } from "child_process";
 import { promisify } from "util";
@@ -184,6 +184,7 @@ function loadEnv() {
 }
 loadEnv();
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const CLAUDE_MODEL = "claude-sonnet-5";
 const SYSTEM_PROMPT = `You are a specialist in generating NanaBanana2 (Higgsfield) prompts for Brotherhood streetwear marketing/editorial photography. Brotherhood is a Colombian streetwear brand with a bold, authentic aesthetic.
 
 Your prompts follow this exact structure:
@@ -280,7 +281,7 @@ Generate the NanaBanana2 marketing prompt now.`
     }
   ];
   const message = await anthropic.messages.create({
-    model: "claude-sonnet-4-6",
+    model: CLAUDE_MODEL,
     max_tokens: 1024,
     system: systemWithMemory,
     messages: [{ role: "user", content: userContent }]
@@ -290,6 +291,42 @@ Generate the NanaBanana2 marketing prompt now.`
   const prompt = block.text;
   const entry = addMemoryEntry({ timestamp: Date.now(), description, prompt, fired: false });
   return { prompt, memoryId: entry.id };
+});
+const ANGLE_SYSTEM_PROMPT = `You are a fashion photography camera director. You receive one NanaBanana2 (Higgsfield) editorial prompt for Brotherhood streetwear following the [SCENE]/[GARMENT]/[PLACEMENT/INTERACTION]/[COMPOSITION]/[LIGHTING]/[CAMERA]/[MOOD] structure.
+
+Produce exactly 4 variations of the SAME shot changing ONLY the camera work: rewrite [COMPOSITION] and [CAMERA] (lens choice may change), and adjust [LIGHTING] direction wording only where the new angle physically requires it. Everything else — scene, garment description, placement, mood, safety wording — must remain identical word-for-word.
+
+Choose the 4 angle treatments most editorially useful FOR THIS SPECIFIC SHOT, drawing from: tighter close-up / macro detail crop on the garment graphic, 3/4 orbit rotation left or right, low-angle hero shot, high-angle or top-down, profile view, wide establishing pull-back, over-the-shoulder, subtle dutch tilt. The 4 must be clearly distinct from each other and from the original framing.
+
+Output STRICT JSON only — no markdown fences, no commentary:
+[{"label":"<2-4 word angle name>","prompt":"<full modified prompt>"},{...},{...},{...}]`;
+ipcMain.handle("generate-angle-variations", async (_event, { prompt }) => {
+  if (typeof prompt !== "string" || prompt.trim().length === 0 || prompt.length > 12e3) {
+    throw new Error("Invalid prompt");
+  }
+  const message = await anthropic.messages.create({
+    model: CLAUDE_MODEL,
+    max_tokens: 4096,
+    system: ANGLE_SYSTEM_PROMPT,
+    messages: [{ role: "user", content: `Base prompt:
+
+${prompt}
+
+Generate the 4 angle variations now.` }]
+  });
+  const block = message.content[0];
+  if (block.type !== "text") throw new Error("Unexpected response type");
+  const raw = block.text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  let variants;
+  try {
+    variants = JSON.parse(raw);
+  } catch {
+    throw new Error("Claude returned invalid JSON for angle variations");
+  }
+  if (!Array.isArray(variants) || variants.length === 0) throw new Error("No angle variations returned");
+  variants = variants.filter((v) => v && typeof v.label === "string" && typeof v.prompt === "string" && v.prompt.trim().length > 0).slice(0, 4);
+  if (variants.length === 0) throw new Error("No valid angle variations returned");
+  return { variants };
 });
 ipcMain.handle("mark-prompt-fired", (_event, { id, aspectRatio }) => {
   markFired(id, aspectRatio);
@@ -320,10 +357,10 @@ ipcMain.handle("get-memory-entries", () => {
   return [...memory.entries].reverse();
 });
 ipcMain.handle("check-higgsfield-auth", async () => {
-  return { authenticated: !!process.env.GEMINI_API_KEY };
+  return { authenticated: !!process.env.POYO_API_KEY };
 });
 ipcMain.handle("higgsfield-login", async () => {
-  return { ok: false, error: "Add GEMINI_API_KEY to ~/.bmp.env" };
+  return { ok: false, error: "Add POYO_API_KEY to ~/.bmp.env" };
 });
 function downloadFile(url, destPath) {
   if (!url.startsWith("https://")) return Promise.reject(new Error("Only HTTPS downloads are allowed"));
@@ -372,127 +409,60 @@ function downloadDmgWithProgress(url, destPath, token, onProgress) {
   });
 }
 ipcMain.handle("get-higgsfield-credits", async () => {
-  return { credits: null, plan: "imagen-3" };
+  return { credits: null, plan: "nano-banana-2" };
 });
-const GEMINI_IMAGE_MODEL = "gemini-3-pro-image";
 const HF_VALID_RESOLUTIONS = ["1k", "2k"];
 const HF_VALID_ASPECT_RATIOS = ["9:16", "4:5", "1:1", "16:9", "1:2", "2:1"];
-ipcMain.handle("fire-higgsfield", async (event, { prompt, aspectRatio, products, resolution, provider }) => {
+ipcMain.handle("fire-higgsfield", async (event, { prompt, aspectRatio, products, resolution }) => {
   if (typeof prompt !== "string" || prompt.trim().length === 0 || prompt.length > 12e3) {
     throw new Error("Invalid prompt");
   }
   if (!Array.isArray(products) || products.length > 30) throw new Error("Invalid products");
-  const sendProgress = (line) => event.sender.send("higgsfield-progress", line);
+  const sendProgress = (line) => event.sender.send("higgsfield-progress", { scope: "image", line });
   const timestamp = Date.now();
   const desktopPath = loadPrefs().outputPath;
-  if (provider === "higgsfield") {
-    const safeRes = HF_VALID_RESOLUTIONS.includes(resolution) ? resolution : "1k";
-    const safeRatio = HF_VALID_ASPECT_RATIOS.includes(aspectRatio) ? aspectRatio : "4:5";
-    sendProgress("Starting Higgsfield generation...");
-    const args = [
-      "generate",
-      "create",
-      "nano_banana_2",
-      "--prompt",
-      prompt,
-      "--resolution",
-      safeRes || "1k",
-      "--aspect_ratio",
-      safeRatio || "4:5",
-      "--wait"
-    ];
-    if (products.length > 0) {
-      for (const p of products) args.push("--image", p);
-      sendProgress(`Uploading ${products.length} product image${products.length > 1 ? "s" : ""} as reference...`);
-    }
-    try {
-      const { stdout, stderr } = await execFileAsync("higgsfield", args, { timeout: 3e5, env: shellEnv() });
-      const combined = (stdout + "\n" + stderr).trim();
-      if (combined) sendProgress(combined);
-      const cliError = combined.match(/\b(error|failed|failure|rejected|content.?policy|moderat|violat|unsafe|prohibited)\b/i);
-      if (cliError) {
-        const snippet = combined.slice(0, 200);
-        sendProgress(`Generation failed — ${snippet}`);
-        return { success: false, outputPath: "", error: snippet };
-      }
-      const urlMatch = combined.match(/https:\/\/\S+\.(png|jpg|jpeg|webp)/i);
-      if (urlMatch) {
-        const imageUrl = urlMatch[0];
-        const ext = imageUrl.split(".").pop()?.split("?")[0] ?? "jpg";
-        const outputName = `bmp_${timestamp}.${ext}`;
-        const outputPath = join(desktopPath, outputName);
-        sendProgress("Downloading to Desktop...");
-        await downloadFile(imageUrl, outputPath);
-        sendProgress(`Saved: ${outputName}`);
-        return { success: true, outputPath };
-      }
-      sendProgress("Generation failed — no image URL in CLI output");
-      return { success: false, outputPath: "", error: "No image URL in output" };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      sendProgress(`Error: ${msg}`);
-      return { success: false, outputPath: "", error: msg };
-    }
-  }
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error("GEMINI_API_KEY not set — add it to ~/.bmp.env");
-  const productParts = [];
+  const safeRes = HF_VALID_RESOLUTIONS.includes(resolution) ? resolution : "1k";
+  const safeRatio = HF_VALID_ASPECT_RATIOS.includes(aspectRatio) ? aspectRatio : "4:5";
+  sendProgress("Starting Higgsfield generation...");
+  const args = [
+    "generate",
+    "create",
+    "nano_banana_2",
+    "--prompt",
+    prompt,
+    "--resolution",
+    safeRes || "1k",
+    "--aspect_ratio",
+    safeRatio || "4:5",
+    "--wait"
+  ];
   if (products.length > 0) {
-    sendProgress(`Encoding ${products.length} product image${products.length > 1 ? "s" : ""} as reference...`);
-    for (const p of products) {
-      const encoded = resizeAndEncode(p);
-      if (encoded) productParts.push({ inlineData: { mimeType: encoded.mediaType, data: encoded.b64 } });
-    }
+    for (const p of products) args.push("--image", p);
+    sendProgress(`Uploading ${products.length} product image${products.length > 1 ? "s" : ""} as reference...`);
   }
-  const textInstruction = productParts.length > 0 ? `The image${productParts.length > 1 ? "s" : ""} above show the Brotherhood garment. You MUST preserve the exact garment: same color, graphics, logos, and construction details. Generate the editorial fashion photo:
-
-${prompt}` : prompt;
-  const requestParts = [...productParts, { text: textInstruction }];
-  const imageConfig = {};
-  if (aspectRatio) imageConfig.aspectRatio = aspectRatio;
-  if (resolution) imageConfig.imageSize = resolution;
-  sendProgress(`Starting Gemini (${aspectRatio ?? ""}${resolution ? " · " + resolution.toUpperCase() : ""})...`);
   try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_IMAGE_MODEL}:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: requestParts }],
-          generationConfig: { responseModalities: ["IMAGE"], imageConfig }
-        })
-      }
-    );
-    const data = await res.json();
-    if (!res.ok) {
-      const msg = data.error?.message ?? `HTTP ${res.status}`;
-      sendProgress(`API error: ${msg}`);
-      return { success: false, outputPath: "", error: msg };
+    const { stdout, stderr } = await execFileAsync("higgsfield", args, { timeout: 3e5, env: shellEnv() });
+    const combined = (stdout + "\n" + stderr).trim();
+    if (combined) sendProgress(combined);
+    const cliError = combined.match(/\b(error|failed|failure|rejected|content.?policy|moderat|violat|unsafe|prohibited)\b/i);
+    if (cliError) {
+      const snippet = combined.slice(0, 200);
+      sendProgress(`Generation failed — ${snippet}`);
+      return { success: false, outputPath: "", error: snippet };
     }
-    const responseParts = data.candidates?.[0]?.content?.parts ?? [];
-    const imagePart = responseParts.find((p) => p.inlineData);
-    if (!imagePart?.inlineData) {
-      const textPart = responseParts.find((p) => p.text);
-      const hint = textPart?.text?.slice(0, 150) ?? "No image in response — possible content policy rejection";
-      sendProgress(hint);
-      return { success: false, outputPath: "", error: hint };
-    }
-    const { mimeType, data: b64 } = imagePart.inlineData;
-    const ext = mimeType === "image/png" ? "png" : "jpg";
-    const outputName = `bmp_${timestamp}.${ext}`;
-    const outputPath = join(desktopPath, outputName);
-    writeFileSync(outputPath, Buffer.from(b64, "base64"));
-    try {
-      const { stdout } = await execFileAsync("sips", ["-g", "pixelWidth", "-g", "pixelHeight", outputPath]);
-      const w = stdout.match(/pixelWidth:\s*(\d+)/)?.[1];
-      const h = stdout.match(/pixelHeight:\s*(\d+)/)?.[1];
-      if (w && h) sendProgress(`Saved: ${outputName} · ${w}×${h}px`);
-      else sendProgress(`Saved: ${outputName}`);
-    } catch {
+    const urlMatch = combined.match(/https:\/\/\S+\.(png|jpg|jpeg|webp)/i);
+    if (urlMatch) {
+      const imageUrl = urlMatch[0];
+      const ext = imageUrl.split(".").pop()?.split("?")[0] ?? "jpg";
+      const outputName = `bmp_${timestamp}.${ext}`;
+      const outputPath = join(desktopPath, outputName);
+      sendProgress("Downloading to Desktop...");
+      await downloadFile(imageUrl, outputPath);
       sendProgress(`Saved: ${outputName}`);
+      return { success: true, outputPath };
     }
-    return { success: true, outputPath };
+    sendProgress("Generation failed — no image URL in CLI output");
+    return { success: false, outputPath: "", error: "No image URL in output" };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     sendProgress(`Error: ${msg}`);
@@ -561,28 +531,52 @@ async function pollPOYOTask(taskId, apiKey, sendProgress) {
       lastPct = pct;
     }
     if (["finished", "completed", "succeeded"].includes(task.status)) return task.files ?? [];
-    if (["failed", "error"].includes(task.status)) throw new Error(`Generation ${task.status}`);
+    if (["failed", "error"].includes(task.status)) {
+      throw new Error(task.error_message ? `POYO: ${task.error_message}` : `Generation ${task.status}`);
+    }
     await new Promise((r) => setTimeout(r, 5e3));
   }
   throw new Error("Timeout — task exceeded 10 minutes");
 }
-const NB2_RATIOS = ["9:16", "4:5", "3:4", "1:1", "16:9"];
-ipcMain.handle("fire-poyo-image", async (event, { prompt, products, aspectRatio, resolution }) => {
+const NB2_RATIOS = ["9:16", "4:5", "1:1", "16:9"];
+const POYO_MAX_REFS = 14;
+ipcMain.handle("upload-poyo-refs", async (event, { products }) => {
+  if (!Array.isArray(products)) throw new Error("Invalid products");
+  const apiKey = process.env.POYO_API_KEY;
+  if (!apiKey) throw new Error("POYO_API_KEY not set — add it to ~/.bmp.env");
+  const sendProgress = (line) => event.sender.send("higgsfield-progress", { scope: "image", line });
+  let files = products;
+  if (files.length > POYO_MAX_REFS) {
+    sendProgress(`POYO accepts max ${POYO_MAX_REFS} reference images — using the first ${POYO_MAX_REFS}`);
+    files = files.slice(0, POYO_MAX_REFS);
+  }
+  const urls = await uploadFilesToPOYO(files, apiKey, sendProgress);
+  return { urls };
+});
+ipcMain.handle("fire-poyo-image", async (event, { prompt, products, aspectRatio, resolution, imageUrls: presetUrls }) => {
   if (typeof prompt !== "string" || prompt.trim().length === 0) throw new Error("Invalid prompt");
-  if (!Array.isArray(products) || products.length > 14) throw new Error("Invalid products");
+  if (!Array.isArray(products)) throw new Error("Invalid products");
+  if (presetUrls !== void 0 && (!Array.isArray(presetUrls) || presetUrls.some((u) => typeof u !== "string"))) throw new Error("Invalid imageUrls");
   const apiKey = process.env.POYO_API_KEY;
   if (!apiKey) throw new Error("POYO_API_KEY not set — add it to ~/.bmp.env");
   const timestamp = Date.now();
   const desktopPath = loadPrefs().outputPath;
-  const sendProgress = (line) => event.sender.send("higgsfield-progress", line);
-  const safeSize = NB2_RATIOS.includes(aspectRatio) ? aspectRatio : "3:4";
+  const sendProgress = (line) => event.sender.send("higgsfield-progress", { scope: "image", line });
+  const safeSize = NB2_RATIOS.includes(aspectRatio) ? aspectRatio : "4:5";
   const safeRes = ["1k", "2k", "4k"].includes(resolution) ? resolution.toUpperCase() : "2K";
-  let imageUrls = [];
-  try {
-    imageUrls = await uploadFilesToPOYO(products, apiKey, sendProgress);
-  } catch (err) {
-    sendProgress(err instanceof Error ? err.message : String(err));
-    return { success: false, outputPath: "", error: String(err) };
+  let imageUrls = (presetUrls ?? []).slice(0, POYO_MAX_REFS);
+  if (imageUrls.length === 0 && products.length > 0) {
+    let files = products;
+    if (files.length > POYO_MAX_REFS) {
+      sendProgress(`POYO accepts max ${POYO_MAX_REFS} reference images — using the first ${POYO_MAX_REFS}`);
+      files = files.slice(0, POYO_MAX_REFS);
+    }
+    try {
+      imageUrls = await uploadFilesToPOYO(files, apiKey, sendProgress);
+    } catch (err) {
+      sendProgress(err instanceof Error ? err.message : String(err));
+      return { success: false, outputPath: "", error: String(err) };
+    }
   }
   const model = imageUrls.length > 0 ? "nano-banana-2-edit" : "nano-banana-2";
   const input = { prompt, size: safeSize, resolution: safeRes };
@@ -627,14 +621,14 @@ ipcMain.handle("fire-poyo-image", async (event, { prompt, products, aspectRatio,
     return { success: false, outputPath: "", error: msg };
   }
 });
-ipcMain.handle("fire-video", async (event, { prompt, products: frames, videoModel, aspectRatio, resolution, duration, generateAudio }) => {
+ipcMain.handle("fire-video", async (event, { prompt, products: frames, videoModel, aspectRatio, resolution, duration }) => {
   if (typeof prompt !== "string" || prompt.trim().length === 0) throw new Error("Invalid prompt");
   if (!Array.isArray(frames) || frames.length > 9) throw new Error("Invalid frames");
   const apiKey = process.env.POYO_API_KEY;
   if (!apiKey) throw new Error("POYO_API_KEY not set — add it to ~/.bmp.env");
   const timestamp = Date.now();
   const desktopPath = loadPrefs().outputPath;
-  const sendProgress = (line) => event.sender.send("higgsfield-progress", line);
+  const sendProgress = (line) => event.sender.send("higgsfield-progress", { scope: "video", line });
   const tagRefs = [...prompt.matchAll(/@Image(\d+)/gi)].map((m) => parseInt(m[1]));
   const maxTag = tagRefs.length > 0 ? Math.max(...tagRefs) : 0;
   if (maxTag > frames.length) {
@@ -654,7 +648,7 @@ ipcMain.handle("fire-video", async (event, { prompt, products: frames, videoMode
     prompt,
     resolution,
     duration,
-    generate_audio: generateAudio
+    generate_audio: false
   };
   if (aspectRatio !== "auto") input.aspect_ratio = aspectRatio;
   if (referenceImageUrls.length > 0) input.reference_image_urls = referenceImageUrls;
