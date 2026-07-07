@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync, createWriteStream } from 'fs'
 import { homedir } from 'os'
 import { execFile, exec } from 'child_process'
 import { promisify } from 'util'
+import { scryptSync, timingSafeEqual } from 'crypto'
 import https from 'https'
 import Anthropic from '@anthropic-ai/sdk'
 import electronUpdater from 'electron-updater'
@@ -17,6 +18,9 @@ type IconStyle = typeof ICON_STYLES[number]
 interface Prefs {
   iconStyle: IconStyle
   outputPath: string
+  unlockedAt?: string
+  authFailCount?: number
+  authLockUntil?: number
 }
 
 function prefsPath(): string {
@@ -39,6 +43,86 @@ function loadPrefs(): Prefs {
 function savePrefs(prefs: Prefs) {
   writeFileSync(prefsPath(), JSON.stringify(prefs, null, 2), 'utf-8')
 }
+
+// ─── App lock ─────────────────────────────────────────────────────────────────
+// Only the scrypt hash + salt live here — the passphrase itself is never
+// written to source or to the compiled bundle, so reading/decompiling the app
+// cannot recover it directly (only an offline brute-force against the hash).
+const LOCK_SALT_HEX = '7676d27c96570e2c9bcb3a2efc95ea06'
+const LOCK_HASH_HEX = '269de1a03844d8db8f8b154038a158a44bf19b79e309b6eb2c7c7ecf1db6e2b687dc6f34b9a107cebe3f224260b1b58c67324f54be47f0766cc938a1bac8ad31'
+const LOCK_HASH = Buffer.from(LOCK_HASH_HEX, 'hex')
+
+let unlocked = false
+
+function verifyPassphrase(attempt: string): boolean {
+  const candidate = scryptSync(attempt, Buffer.from(LOCK_SALT_HEX, 'hex'), 64)
+  return candidate.length === LOCK_HASH.length && timingSafeEqual(candidate, LOCK_HASH)
+}
+
+// Failed attempts + lockout persist across restarts (in prefs) so quitting
+// and relaunching the app can't be used to reset a brute-force cooldown.
+function currentLockout(): number {
+  return loadPrefs().authLockUntil ?? 0
+}
+
+function registerFailedAttempt(): number {
+  const prefs = loadPrefs()
+  const count = (prefs.authFailCount ?? 0) + 1
+  // Exponential backoff after the 3rd bad attempt: 5s, 10s, 20s, 40s ... capped at 5min
+  const lockUntil = count >= 3
+    ? Date.now() + Math.min(5000 * 2 ** (count - 3), 5 * 60 * 1000)
+    : 0
+  savePrefs({ ...prefs, authFailCount: count, authLockUntil: lockUntil })
+  return lockUntil
+}
+
+function clearAuthState(): void {
+  const prefs = loadPrefs()
+  savePrefs({ ...prefs, authFailCount: 0, authLockUntil: 0, unlockedAt: new Date().toISOString() })
+}
+
+function requireUnlocked(): void {
+  if (!unlocked) throw new Error('Locked')
+}
+
+// Every handler below requires the passphrase to have been entered once on
+// this machine — without this, a renderer that skips the LockScreen UI
+// (e.g. via devtools) still can't reach the filesystem or the Anthropic/POYO keys.
+function handleWhenUnlocked<Args extends unknown[], R>(
+  channel: string,
+  fn: (event: Electron.IpcMainInvokeEvent, ...args: Args) => R,
+): void {
+  ipcMain.handle(channel, (event, ...args: Args) => {
+    requireUnlocked()
+    return fn(event, ...args)
+  })
+}
+
+ipcMain.handle('auth:status', () => ({
+  locked: !unlocked,
+  lockUntil: currentLockout(),
+}))
+
+ipcMain.handle('auth:unlock', (_e, attempt: unknown) => {
+  const lockUntil = currentLockout()
+  if (Date.now() < lockUntil) return { ok: false, lockUntil }
+  if (typeof attempt !== 'string' || !verifyPassphrase(attempt)) {
+    return { ok: false, lockUntil: registerFailedAttempt() }
+  }
+  clearAuthState()
+  unlocked = true
+  return { ok: true, lockUntil: 0 }
+})
+
+// Paths the renderer is legitimately allowed to preview via localfile:// —
+// resolved from a real Finder drag (preload's getPathForFile wrapper
+// registers it here). Without this the protocol handler below would serve
+// ANY path on disk with no restriction.
+const knownLocalPaths = new Set<string>()
+ipcMain.on('register-known-path', (event, path: unknown) => {
+  if (typeof path === 'string' && path) knownLocalPaths.add(path)
+  event.returnValue = true
+})
 
 function getIconPath(styleName: string): string {
   const filename = `Icon-macOS-${styleName}-1024@1x.png`
@@ -302,7 +386,7 @@ function filesToVisionContent(paths: string[]): Anthropic.ImageBlockParam[] {
 const GENERATE_COOLDOWN_MS = 4000
 let lastGenerateTime = 0
 
-ipcMain.handle('generate-prompt', async (_event, { refs, products, description }: { refs: string[]; products: string[]; description: string }) => {
+handleWhenUnlocked('generate-prompt', async (_event, { refs, products, description }: { refs: string[]; products: string[]; description: string }) => {
   const now = Date.now()
   if (now - lastGenerateTime < GENERATE_COOLDOWN_MS) {
     const wait = Math.ceil((GENERATE_COOLDOWN_MS - (now - lastGenerateTime)) / 1000)
@@ -360,7 +444,7 @@ Choose the 4 angle treatments most editorially useful FOR THIS SPECIFIC SHOT, dr
 Output STRICT JSON only — no markdown fences, no commentary:
 [{"label":"<2-4 word angle name>","prompt":"<full modified prompt>"},{...},{...},{...}]`
 
-ipcMain.handle('generate-angle-variations', async (_event, { prompt }: { prompt: string }) => {
+handleWhenUnlocked('generate-angle-variations', async (_event, { prompt }: { prompt: string }) => {
   if (typeof prompt !== 'string' || prompt.trim().length === 0 || prompt.length > 12000) {
     throw new Error('Invalid prompt')
   }
@@ -392,20 +476,20 @@ ipcMain.handle('generate-angle-variations', async (_event, { prompt }: { prompt:
   return { variants }
 })
 
-ipcMain.handle('mark-prompt-fired', (_event, { id, aspectRatio }: { id: string; aspectRatio: string }) => {
+handleWhenUnlocked('mark-prompt-fired', (_event, { id, aspectRatio }: { id: string; aspectRatio: string }) => {
   markFired(id, aspectRatio)
 })
 
-ipcMain.handle('get-version', () => app.getVersion())
+handleWhenUnlocked('get-version', () => app.getVersion())
 
-ipcMain.handle('get-output-path', () => loadPrefs().outputPath)
+handleWhenUnlocked('get-output-path', () => loadPrefs().outputPath)
 
-ipcMain.handle('set-output-path', (_event, path: string) => {
+handleWhenUnlocked('set-output-path', (_event, path: string) => {
   if (typeof path !== 'string' || path.length === 0) throw new Error('Invalid path')
   savePrefs({ ...loadPrefs(), outputPath: path })
 })
 
-ipcMain.handle('open-folder-dialog', async () => {
+handleWhenUnlocked('open-folder-dialog', async () => {
   const result = await dialog.showOpenDialog({
     properties: ['openDirectory', 'createDirectory'],
     title: 'Choose output folder',
@@ -414,7 +498,7 @@ ipcMain.handle('open-folder-dialog', async () => {
   return result.filePaths[0]
 })
 
-ipcMain.handle('get-memory-stats', () => {
+handleWhenUnlocked('get-memory-stats', () => {
   const memory = loadMemory()
   return {
     total: memory.entries.length,
@@ -422,16 +506,16 @@ ipcMain.handle('get-memory-stats', () => {
   }
 })
 
-ipcMain.handle('get-memory-entries', () => {
+handleWhenUnlocked('get-memory-entries', () => {
   const memory = loadMemory()
   return [...memory.entries].reverse()
 })
 
-ipcMain.handle('check-higgsfield-auth', async () => {
+handleWhenUnlocked('check-higgsfield-auth', async () => {
   return { authenticated: !!process.env.POYO_API_KEY }
 })
 
-ipcMain.handle('higgsfield-login', async () => {
+handleWhenUnlocked('higgsfield-login', async () => {
   return { ok: false, error: 'Add POYO_API_KEY to ~/.bmp.env' }
 })
 
@@ -489,14 +573,14 @@ function downloadDmgWithProgress(
   })
 }
 
-ipcMain.handle('get-higgsfield-credits', async () => {
+handleWhenUnlocked('get-higgsfield-credits', async () => {
   return { credits: null, plan: 'nano-banana-2' }
 })
 
 const HF_VALID_RESOLUTIONS = ['1k', '2k'] as const
 const HF_VALID_ASPECT_RATIOS = ['9:16', '4:5', '1:1', '16:9', '1:2', '2:1'] as const
 
-ipcMain.handle('fire-higgsfield', async (event, { prompt, aspectRatio, products, resolution }: { prompt: string; aspectRatio: string; products: string[]; resolution?: string }) => {
+handleWhenUnlocked('fire-higgsfield', async (event, { prompt, aspectRatio, products, resolution }: { prompt: string; aspectRatio: string; products: string[]; resolution?: string }) => {
   if (typeof prompt !== 'string' || prompt.trim().length === 0 || prompt.length > 12000) {
     throw new Error('Invalid prompt')
   }
@@ -642,7 +726,7 @@ const POYO_MAX_REFS = 14 // POYO nano-banana-2(-edit) hard limit: 14 reference i
 
 // Upload product refs once and return their POYO URLs — used to fan out multiple
 // generations (variations / angles) without re-uploading the same images per task
-ipcMain.handle('upload-poyo-refs', async (event, { products }: { products: string[] }) => {
+handleWhenUnlocked('upload-poyo-refs', async (event, { products }: { products: string[] }) => {
   if (!Array.isArray(products)) throw new Error('Invalid products')
 
   const apiKey = process.env.POYO_API_KEY
@@ -658,7 +742,7 @@ ipcMain.handle('upload-poyo-refs', async (event, { products }: { products: strin
   return { urls }
 })
 
-ipcMain.handle('fire-poyo-image', async (event, { prompt, products, aspectRatio, resolution, imageUrls: presetUrls }: {
+handleWhenUnlocked('fire-poyo-image', async (event, { prompt, products, aspectRatio, resolution, imageUrls: presetUrls }: {
   prompt: string; products: string[]; aspectRatio: string; resolution: string; imageUrls?: string[]
 }) => {
   if (typeof prompt !== 'string' || prompt.trim().length === 0) throw new Error('Invalid prompt')
@@ -733,7 +817,7 @@ ipcMain.handle('fire-poyo-image', async (event, { prompt, products, aspectRatio,
   }
 })
 
-ipcMain.handle('fire-video', async (event, { prompt, products: frames, videoModel, aspectRatio, resolution, duration }: {
+handleWhenUnlocked('fire-video', async (event, { prompt, products: frames, videoModel, aspectRatio, resolution, duration }: {
   prompt: string; products: string[]; videoModel: string; aspectRatio: string; resolution: string; duration: number
 }) => {
   if (typeof prompt !== 'string' || prompt.trim().length === 0) throw new Error('Invalid prompt')
@@ -920,8 +1004,15 @@ function setupAutoUpdater(win: BrowserWindow) {
 app.whenReady().then(() => {
   protocol.handle('localfile', (request) => {
     const filePath = decodeURIComponent(request.url.slice('localfile://'.length))
+    // Only serve paths the renderer legitimately resolved (a real Finder drag
+    // via getPathForFile) and only once unlocked — otherwise ANY path on disk
+    // would be readable through this scheme.
+    if (!unlocked || !knownLocalPaths.has(filePath)) {
+      return new Response('Forbidden', { status: 403 })
+    }
     return net.fetch(`file://${filePath}`)
   })
+  unlocked = Boolean(loadPrefs().unlockedAt)
   buildAppMenu()
   applyDockIcon(loadPrefs().iconStyle)
   const win = createWindow()

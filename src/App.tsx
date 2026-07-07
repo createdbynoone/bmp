@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react'
+import LockScreen from './components/LockScreen'
 import { DropZone } from './components/DropZone'
 import { PromptOutput } from './components/PromptOutput'
 import { HiggsfieldButton } from './components/HiggsfieldButton'
@@ -48,23 +49,34 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false)
   const [showLoginModal, setShowLoginModal] = useState(false)
 
+  const [authState, setAuthState] = useState<'checking' | 'locked' | 'unlocked'>('checking')
+  const [lockUntil, setLockUntil] = useState(0)
+
   useEffect(() => {
-    if (!window.bmp) return
+    window.bmp.auth.status().then(res => {
+      if (res.locked) { setLockUntil(res.lockUntil); setAuthState('locked') }
+      else setAuthState('unlocked')
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!window.bmp || authState !== 'unlocked') return
     const cleanup = window.bmp.onHiggsfieldProgress((evt) => {
       if (evt.scope === 'video') setVideoProgress((prev) => [...prev, evt.line])
       else setImageProgress((prev) => [...prev, evt.line])
     })
     return cleanup
-  }, [])
+  }, [authState])
 
   useEffect(() => {
+    if (authState !== 'unlocked') return
     window.bmp?.checkHiggsfieldAuth?.().then((res: { authenticated: boolean }) => {
       if (!res.authenticated) { setShowLoginModal(true); window.bmp?.higgsfieldLogin?.() }
     })
     window.bmp?.getMemoryStats?.().then((s: { total: number; fired: number }) => setMemoryStats(s))
     window.bmp?.getHiggsfieldCredits?.().then((c) => setCredits(c))
     window.bmp?.getVersion?.().then((v) => setAppVersion(v))
-  }, [])
+  }, [authState])
 
   const handleProviderChange = (p: Provider) => {
     setProvider(p)
@@ -183,6 +195,12 @@ export default function App() {
     : `${provider === 'higgsfield' ? 'higgsfield' : 'nano-banana-2'} · ${aspectRatio} · ${resolution.toUpperCase()}`
 
   const fireDisabled = mode === 'video' ? !videoPrompt.trim() : !prompt
+
+  if (authState === 'checking') return null
+
+  if (authState === 'locked') {
+    return <LockScreen initialLockUntil={lockUntil} onUnlocked={() => setAuthState('unlocked')} />
+  }
 
   return (
     <div className="flex flex-col h-screen bg-bg overflow-hidden">

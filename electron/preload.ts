@@ -1,9 +1,19 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 contextBridge.exposeInMainWorld('bmp', {
+  auth: {
+    status: () => ipcRenderer.invoke('auth:status'),
+    unlock: (key: string) => ipcRenderer.invoke('auth:unlock', key),
+  },
+
   // Electron 32+ removed File.path from the renderer — this resolves the
-  // absolute path of files dragged in from Finder
-  getPathForFile: (file: File) => webUtils.getPathForFile(file),
+  // absolute path of files dragged in from Finder. Also registers the path
+  // with the main process so the localfile:// protocol is allowed to serve it.
+  getPathForFile: (file: File) => {
+    const path = webUtils.getPathForFile(file)
+    ipcRenderer.sendSync('register-known-path', path)
+    return path
+  },
 
   generatePrompt: (data: { refs: string[]; products: string[]; description: string }) =>
     ipcRenderer.invoke('generate-prompt', data),

@@ -1,5 +1,9 @@
 interface Window {
   bmp: {
+    auth: {
+      status: () => Promise<{ locked: boolean; lockUntil: number }>
+      unlock: (key: string) => Promise<{ ok: boolean; lockUntil: number }>
+    }
     getPathForFile: (file: File) => string
     generatePrompt: (data: { refs: string[]; products: string[]; description: string }) => Promise<{ prompt: string; memoryId: string }>
     generateAngleVariations: (data: { prompt: string }) => Promise<{ variants: Array<{ label: string; prompt: string }> }>

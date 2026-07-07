@@ -4,7 +4,14 @@ Electron app para generar prompts de marketing de prendas Brotherhood y disparar
 
 **Dev:** `npm run dev`
 **Release:** `bash scripts/publish.sh` (build local + subida via gh — ver sección Release)
-**Versión actual:** `1.5.0` (2026-07-03: tareas por modo en background al cambiar de pestaña, Angles ×4, modelo `claude-sonnet-5`, Gemini removido, POYO refs pre-upload + cap 14, ratios reducidos, audio de video siempre off)
+**Versión actual:** `1.6.0` (2026-07-07: lock screen + fix de seguridad en localfile:// — ver sección abajo)
+
+## Lock screen + seguridad (v1.6.0, 2026-07-07)
+- Primer arranque en una máquina pide passphrase (`brother*1998_hood`, mismo patrón que Brotherhood Canvas/Sorter/Product Builder) antes de tocar filesystem/API keys — scrypt hash+salt propios en `main.ts`, nunca el texto plano; `timingSafeEqual`; backoff exponencial persistido en `bmp-prefs.json`
+- `handleWhenUnlocked()` gatea todos los IPC (`generate-prompt`, `fire-higgsfield`, `fire-poyo-image`, `fire-video`, `upload-poyo-refs`, `get-memory-entries`, etc.)
+- **Vulnerabilidad real corregida**: el protocolo `localfile://` hacía `net.fetch('file://' + path)` con CUALQUIER path, sin restricción. Ahora `knownLocalPaths` (Set poblado por el wrapper de `getPathForFile` en preload) es el único conjunto de paths servibles, y solo si `unlocked`
+- CSP agregado a `index.html` (no existía)
+- Para regenerar el hash si cambia la clave: `node -e "const c=require('crypto');const s=c.randomBytes(16);console.log(s.toString('hex'), c.scryptSync('NUEVA_CLAVE',s,64).toString('hex'))"` y reemplazar `LOCK_SALT_HEX`/`LOCK_HASH_HEX`
 
 ## Stack
 - Electron 43 + electron-vite 5 + vite 7 + React 18 + Tailwind
