@@ -1,9 +1,10 @@
-import { ipcMain, app, dialog, protocol, net, BrowserWindow, Menu, nativeImage, shell } from "electron";
+import { ipcMain, protocol, app, net, BrowserWindow, Menu, nativeImage, shell, dialog } from "electron";
 import { join } from "path";
-import { readFileSync, writeFileSync, createWriteStream } from "fs";
+import { readFileSync, writeFileSync, createWriteStream, rmdirSync, mkdirSync, readdirSync, renameSync, unlinkSync } from "fs";
 import { homedir } from "os";
 import { execFile, exec } from "child_process";
 import { promisify } from "util";
+import { scryptSync, timingSafeEqual } from "crypto";
 import https from "https";
 import Anthropic from "@anthropic-ai/sdk";
 import electronUpdater from "electron-updater";
@@ -30,6 +31,56 @@ function loadPrefs() {
 function savePrefs(prefs) {
   writeFileSync(prefsPath(), JSON.stringify(prefs, null, 2), "utf-8");
 }
+const LOCK_SALT_HEX = "7676d27c96570e2c9bcb3a2efc95ea06";
+const LOCK_HASH_HEX = "269de1a03844d8db8f8b154038a158a44bf19b79e309b6eb2c7c7ecf1db6e2b687dc6f34b9a107cebe3f224260b1b58c67324f54be47f0766cc938a1bac8ad31";
+const LOCK_HASH = Buffer.from(LOCK_HASH_HEX, "hex");
+let unlocked = false;
+function verifyPassphrase(attempt) {
+  const candidate = scryptSync(attempt, Buffer.from(LOCK_SALT_HEX, "hex"), 64);
+  return candidate.length === LOCK_HASH.length && timingSafeEqual(candidate, LOCK_HASH);
+}
+function currentLockout() {
+  return loadPrefs().authLockUntil ?? 0;
+}
+function registerFailedAttempt() {
+  const prefs = loadPrefs();
+  const count = (prefs.authFailCount ?? 0) + 1;
+  const lockUntil = count >= 3 ? Date.now() + Math.min(5e3 * 2 ** (count - 3), 5 * 60 * 1e3) : 0;
+  savePrefs({ ...prefs, authFailCount: count, authLockUntil: lockUntil });
+  return lockUntil;
+}
+function clearAuthState() {
+  const prefs = loadPrefs();
+  savePrefs({ ...prefs, authFailCount: 0, authLockUntil: 0, unlockedAt: (/* @__PURE__ */ new Date()).toISOString() });
+}
+function requireUnlocked() {
+  if (!unlocked) throw new Error("Locked");
+}
+function handleWhenUnlocked(channel, fn) {
+  ipcMain.handle(channel, (event, ...args) => {
+    requireUnlocked();
+    return fn(event, ...args);
+  });
+}
+ipcMain.handle("auth:status", () => ({
+  locked: !unlocked,
+  lockUntil: currentLockout()
+}));
+ipcMain.handle("auth:unlock", (_e, attempt) => {
+  const lockUntil = currentLockout();
+  if (Date.now() < lockUntil) return { ok: false, lockUntil };
+  if (typeof attempt !== "string" || !verifyPassphrase(attempt)) {
+    return { ok: false, lockUntil: registerFailedAttempt() };
+  }
+  clearAuthState();
+  unlocked = true;
+  return { ok: true, lockUntil: 0 };
+});
+const knownLocalPaths = /* @__PURE__ */ new Set();
+ipcMain.on("register-known-path", (event, path) => {
+  if (typeof path === "string" && path) knownLocalPaths.add(path);
+  event.returnValue = true;
+});
 function getIconPath(styleName) {
   const filename = `Icon-macOS-${styleName}-1024@1x.png`;
   if (app.isPackaged) return join(process.resourcesPath, "icons", filename);
@@ -39,7 +90,7 @@ function applyDockIcon(styleName) {
   if (process.platform !== "darwin") return;
   try {
     const icon = nativeImage.createFromPath(getIconPath(styleName));
-    if (!icon.isEmpty()) app.dock.setIcon(icon);
+    if (!icon.isEmpty()) app.dock?.setIcon(icon);
   } catch {
   }
 }
@@ -251,7 +302,7 @@ function filesToVisionContent(paths) {
 }
 const GENERATE_COOLDOWN_MS = 4e3;
 let lastGenerateTime = 0;
-ipcMain.handle("generate-prompt", async (_event, { refs, products, description }) => {
+handleWhenUnlocked("generate-prompt", async (_event, { refs, products, description }) => {
   const now = Date.now();
   if (now - lastGenerateTime < GENERATE_COOLDOWN_MS) {
     const wait = Math.ceil((GENERATE_COOLDOWN_MS - (now - lastGenerateTime)) / 1e3);
@@ -292,52 +343,16 @@ Generate the NanaBanana2 marketing prompt now.`
   const entry = addMemoryEntry({ timestamp: Date.now(), description, prompt, fired: false });
   return { prompt, memoryId: entry.id };
 });
-const ANGLE_SYSTEM_PROMPT = `You are a fashion photography camera director. You receive one NanaBanana2 (Higgsfield) editorial prompt for Brotherhood streetwear following the [SCENE]/[GARMENT]/[PLACEMENT/INTERACTION]/[COMPOSITION]/[LIGHTING]/[CAMERA]/[MOOD] structure.
-
-Produce exactly 4 variations of the SAME shot changing ONLY the camera work: rewrite [COMPOSITION] and [CAMERA] (lens choice may change), and adjust [LIGHTING] direction wording only where the new angle physically requires it. Everything else — scene, garment description, placement, mood, safety wording — must remain identical word-for-word.
-
-Choose the 4 angle treatments most editorially useful FOR THIS SPECIFIC SHOT, drawing from: tighter close-up / macro detail crop on the garment graphic, 3/4 orbit rotation left or right, low-angle hero shot, high-angle or top-down, profile view, wide establishing pull-back, over-the-shoulder, subtle dutch tilt. The 4 must be clearly distinct from each other and from the original framing.
-
-Output STRICT JSON only — no markdown fences, no commentary:
-[{"label":"<2-4 word angle name>","prompt":"<full modified prompt>"},{...},{...},{...}]`;
-ipcMain.handle("generate-angle-variations", async (_event, { prompt }) => {
-  if (typeof prompt !== "string" || prompt.trim().length === 0 || prompt.length > 12e3) {
-    throw new Error("Invalid prompt");
-  }
-  const message = await anthropic.messages.create({
-    model: CLAUDE_MODEL,
-    max_tokens: 4096,
-    system: ANGLE_SYSTEM_PROMPT,
-    messages: [{ role: "user", content: `Base prompt:
-
-${prompt}
-
-Generate the 4 angle variations now.` }]
-  });
-  const block = message.content[0];
-  if (block.type !== "text") throw new Error("Unexpected response type");
-  const raw = block.text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  let variants;
-  try {
-    variants = JSON.parse(raw);
-  } catch {
-    throw new Error("Claude returned invalid JSON for angle variations");
-  }
-  if (!Array.isArray(variants) || variants.length === 0) throw new Error("No angle variations returned");
-  variants = variants.filter((v) => v && typeof v.label === "string" && typeof v.prompt === "string" && v.prompt.trim().length > 0).slice(0, 4);
-  if (variants.length === 0) throw new Error("No valid angle variations returned");
-  return { variants };
-});
-ipcMain.handle("mark-prompt-fired", (_event, { id, aspectRatio }) => {
+handleWhenUnlocked("mark-prompt-fired", (_event, { id, aspectRatio }) => {
   markFired(id, aspectRatio);
 });
-ipcMain.handle("get-version", () => app.getVersion());
-ipcMain.handle("get-output-path", () => loadPrefs().outputPath);
-ipcMain.handle("set-output-path", (_event, path) => {
+handleWhenUnlocked("get-version", () => app.getVersion());
+handleWhenUnlocked("get-output-path", () => loadPrefs().outputPath);
+handleWhenUnlocked("set-output-path", (_event, path) => {
   if (typeof path !== "string" || path.length === 0) throw new Error("Invalid path");
   savePrefs({ ...loadPrefs(), outputPath: path });
 });
-ipcMain.handle("open-folder-dialog", async () => {
+handleWhenUnlocked("open-folder-dialog", async () => {
   const result = await dialog.showOpenDialog({
     properties: ["openDirectory", "createDirectory"],
     title: "Choose output folder"
@@ -345,21 +360,21 @@ ipcMain.handle("open-folder-dialog", async () => {
   if (result.canceled || result.filePaths.length === 0) return null;
   return result.filePaths[0];
 });
-ipcMain.handle("get-memory-stats", () => {
+handleWhenUnlocked("get-memory-stats", () => {
   const memory = loadMemory();
   return {
     total: memory.entries.length,
     fired: memory.entries.filter((e) => e.fired).length
   };
 });
-ipcMain.handle("get-memory-entries", () => {
+handleWhenUnlocked("get-memory-entries", () => {
   const memory = loadMemory();
   return [...memory.entries].reverse();
 });
-ipcMain.handle("check-higgsfield-auth", async () => {
+handleWhenUnlocked("check-higgsfield-auth", async () => {
   return { authenticated: !!process.env.POYO_API_KEY };
 });
-ipcMain.handle("higgsfield-login", async () => {
+handleWhenUnlocked("higgsfield-login", async () => {
   return { ok: false, error: "Add POYO_API_KEY to ~/.bmp.env" };
 });
 function downloadFile(url, destPath) {
@@ -408,12 +423,12 @@ function downloadDmgWithProgress(url, destPath, token, onProgress) {
     attempt(url);
   });
 }
-ipcMain.handle("get-higgsfield-credits", async () => {
+handleWhenUnlocked("get-higgsfield-credits", async () => {
   return { credits: null, plan: "nano-banana-2" };
 });
 const HF_VALID_RESOLUTIONS = ["1k", "2k"];
 const HF_VALID_ASPECT_RATIOS = ["9:16", "4:5", "1:1", "16:9", "1:2", "2:1"];
-ipcMain.handle("fire-higgsfield", async (event, { prompt, aspectRatio, products, resolution }) => {
+handleWhenUnlocked("fire-higgsfield", async (event, { prompt, aspectRatio, products, resolution }) => {
   if (typeof prompt !== "string" || prompt.trim().length === 0 || prompt.length > 12e3) {
     throw new Error("Invalid prompt");
   }
@@ -540,7 +555,7 @@ async function pollPOYOTask(taskId, apiKey, sendProgress) {
 }
 const NB2_RATIOS = ["9:16", "4:5", "1:1", "16:9"];
 const POYO_MAX_REFS = 14;
-ipcMain.handle("upload-poyo-refs", async (event, { products }) => {
+handleWhenUnlocked("upload-poyo-refs", async (event, { products }) => {
   if (!Array.isArray(products)) throw new Error("Invalid products");
   const apiKey = process.env.POYO_API_KEY;
   if (!apiKey) throw new Error("POYO_API_KEY not set — add it to ~/.bmp.env");
@@ -553,7 +568,7 @@ ipcMain.handle("upload-poyo-refs", async (event, { products }) => {
   const urls = await uploadFilesToPOYO(files, apiKey, sendProgress);
   return { urls };
 });
-ipcMain.handle("fire-poyo-image", async (event, { prompt, products, aspectRatio, resolution, imageUrls: presetUrls }) => {
+handleWhenUnlocked("fire-poyo-image", async (event, { prompt, products, aspectRatio, resolution, imageUrls: presetUrls }) => {
   if (typeof prompt !== "string" || prompt.trim().length === 0) throw new Error("Invalid prompt");
   if (!Array.isArray(products)) throw new Error("Invalid products");
   if (presetUrls !== void 0 && (!Array.isArray(presetUrls) || presetUrls.some((u) => typeof u !== "string"))) throw new Error("Invalid imageUrls");
@@ -606,6 +621,7 @@ ipcMain.handle("fire-poyo-image", async (event, { prompt, products, aspectRatio,
     const outputPath = join(desktopPath, outputName);
     sendProgress("Downloading image...");
     await downloadFile(imgFile.file_url, outputPath);
+    knownLocalPaths.add(outputPath);
     try {
       const { stdout } = await execFileAsync("sips", ["-g", "pixelWidth", "-g", "pixelHeight", outputPath]);
       const w = stdout.match(/pixelWidth:\s*(\d+)/)?.[1];
@@ -621,7 +637,189 @@ ipcMain.handle("fire-poyo-image", async (event, { prompt, products, aspectRatio,
     return { success: false, outputPath: "", error: msg };
   }
 });
-ipcMain.handle("fire-video", async (event, { prompt, products: frames, videoModel, aspectRatio, resolution, duration }) => {
+const MODELS_DIR = "/Volumes/Sandisk Home/Brotherhood/IA/Modelos";
+const RECRAFT_SIZES = {
+  "9:16": "1536x2688",
+  "4:5": "1792x2304",
+  "1:1": "2048x2048",
+  "16:9": "2688x1536"
+};
+const MACRO_FACE_PROMPT = `Macro beauty close-up of the EXACT same person from the reference image — preserve identical facial features, bone structure, skin tone, eye color, eyebrows, hairstyle and any visible styling exactly as shown. Tight portrait framing from forehead to chin filling the frame, face centered, eyes locked direct to lens in razor-sharp focus. Ultra-detailed natural skin texture: visible pores, fine vellus hair, natural micro-imperfections and subtle sheen — no airbrushing. Individual eyelashes and brow hairs resolved, natural lip texture. Soft wraparound beauty-dish light with clean catchlights in both eyes, gentle falloff, seamless neutral studio backdrop dissolving out of focus. Shot on Sony A7R IV, 90mm macro lens at f/4, shallow depth of field. Ultra-realistic commercial beauty campaign photography.`;
+const reservedSkus = /* @__PURE__ */ new Set();
+function allocateSku(gender) {
+  const prefix = gender === "male" ? "SMM" : "SMF";
+  const genderDir = join(MODELS_DIR, prefix);
+  mkdirSync(genderDir, { recursive: true });
+  const rx = new RegExp(`^${prefix}(\\d{3,})$`);
+  const used = readdirSync(genderDir).map((n) => n.match(rx)?.[1]).filter((n) => n !== void 0).map(Number);
+  for (const s of reservedSkus) {
+    const m = s.match(rx);
+    if (m) used.push(Number(m[1]));
+  }
+  const sku = `${prefix}${String((used.length > 0 ? Math.max(...used) : 0) + 1).padStart(3, "0")}`;
+  reservedSkus.add(sku);
+  const dir = join(genderDir, sku);
+  mkdirSync(dir, { recursive: true });
+  return { sku, dir };
+}
+function sniffImageExt(path) {
+  const head = readFileSync(path).subarray(0, 4);
+  return head.toString("latin1") === "RIFF" ? "webp" : head[0] === 137 && head[1] === 80 ? "png" : head[0] === 255 && head[1] === 216 ? "jpg" : "png";
+}
+async function sendSavedLine(outputPath, sendProgress) {
+  const name = outputPath.split("/").pop() ?? outputPath;
+  try {
+    const { stdout } = await execFileAsync("sips", ["-g", "pixelWidth", "-g", "pixelHeight", outputPath]);
+    const w = stdout.match(/pixelWidth:\s*(\d+)/)?.[1];
+    const h = stdout.match(/pixelHeight:\s*(\d+)/)?.[1];
+    sendProgress(`Saved: ${name}${w && h ? ` · ${w}×${h}px` : ""}`);
+  } catch {
+    sendProgress(`Saved: ${name}`);
+  }
+}
+async function recraftGenerateToFile(prompt, aspectRatio, destDir, baseName, sendProgress) {
+  const apiKey = process.env.RECRAFT_API_KEY;
+  if (!apiKey) throw new Error("RECRAFT_API_KEY not set — add it to ~/.bmp.env");
+  const size = RECRAFT_SIZES[aspectRatio] ?? RECRAFT_SIZES["4:5"];
+  sendProgress(`Submitting Recraft v4.1 Pro (${aspectRatio} · ${size})...`);
+  const res = await fetch("https://external.api.recraft.ai/v1/images/generations", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    // No `style` param — Recraft v4.1 Pro rejects it ("doesn't support style
+    // 'realistic_image'"); the model's default is already photorealistic
+    body: JSON.stringify({ prompt, model: "recraftv4_1_pro", n: 1, size, response_format: "url" })
+  });
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try {
+      const errBody = await res.json();
+      msg = errBody.error?.message ?? errBody.message ?? msg;
+    } catch {
+    }
+    throw new Error(msg);
+  }
+  const data = await res.json();
+  const imageUrl = data.data?.[0]?.url;
+  if (!imageUrl) throw new Error("No image URL in Recraft response");
+  sendProgress("Downloading image...");
+  const tmpPath = join(destDir, `${baseName}.download`);
+  await downloadFile(imageUrl, tmpPath);
+  const outputPath = join(destDir, `${baseName}.${sniffImageExt(tmpPath)}`);
+  renameSync(tmpPath, outputPath);
+  knownLocalPaths.add(outputPath);
+  await sendSavedLine(outputPath, sendProgress);
+  return outputPath;
+}
+async function poyoGenerateToFile(opts) {
+  const { model, input, apiKey, destDir, baseName, sendProgress } = opts;
+  const submitRes = await fetch("https://api.poyo.ai/api/generate/submit", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model, input })
+  });
+  const submitData = await submitRes.json();
+  if (!submitRes.ok || !submitData.data?.task_id) {
+    throw new Error(submitData.error?.message ?? `HTTP ${submitRes.status}`);
+  }
+  sendProgress(`Generating... (${submitData.data.task_id})`);
+  const files = await pollPOYOTask(submitData.data.task_id, apiKey, sendProgress);
+  const imgFile = files.find((f) => f.file_type === "image" || f.file_url.match(/\.(jpg|jpeg|png|webp)/i));
+  if (!imgFile) throw new Error("No image file in response");
+  const urlExt = imgFile.file_url.split(".").pop()?.split("?")[0]?.toLowerCase();
+  const ext = urlExt && urlExt.length <= 4 ? urlExt : "jpg";
+  const outputPath = join(destDir, `${baseName}.${ext}`);
+  sendProgress("Downloading image...");
+  await downloadFile(imgFile.file_url, outputPath);
+  knownLocalPaths.add(outputPath);
+  await sendSavedLine(outputPath, sendProgress);
+  return outputPath;
+}
+async function uploadRefToPOYO(path, apiKey) {
+  if (!path.toLowerCase().endsWith(".webp")) return uploadFrameToPOYO(path, apiKey, 0);
+  const tmp = path.replace(/\.webp$/i, "_ref.jpg");
+  await execFileAsync("sips", ["-s", "format", "jpeg", "-s", "formatOptions", "90", path, "--out", tmp]);
+  try {
+    return await uploadFrameToPOYO(tmp, apiKey, 0);
+  } finally {
+    try {
+      unlinkSync(tmp);
+    } catch {
+    }
+  }
+}
+handleWhenUnlocked("fire-model", async (event, { prompt, engine, aspectRatio, resolution, gender }) => {
+  if (typeof prompt !== "string" || prompt.trim().length === 0 || prompt.length > 1e4) throw new Error("Invalid prompt");
+  const sendProgress = (line) => event.sender.send("higgsfield-progress", { scope: "model", line });
+  const safeGender = gender === "male" ? "male" : "female";
+  const safeEngine = engine === "recraft" ? "recraft" : "nb2";
+  const safeSize = NB2_RATIOS.includes(aspectRatio) ? aspectRatio : "4:5";
+  const safeRes = ["1k", "2k", "4k"].includes(resolution) ? resolution.toUpperCase() : "2K";
+  const poyoKey = process.env.POYO_API_KEY;
+  let sku;
+  let dir;
+  try {
+    ({ sku, dir } = allocateSku(safeGender));
+  } catch (err) {
+    const msg = `Cannot access ${MODELS_DIR} — ${err instanceof Error ? err.message : String(err)}`;
+    sendProgress(msg);
+    return { success: false, sku: "", outputPath: "", facePath: "", error: msg };
+  }
+  sendProgress(`SKU ${sku} · Modelos/${safeGender === "male" ? "SMM" : "SMF"}/${sku}/`);
+  try {
+    let fullPath;
+    try {
+      if (safeEngine === "recraft") {
+        fullPath = await recraftGenerateToFile(prompt, safeSize, dir, sku, sendProgress);
+      } else {
+        if (!poyoKey) throw new Error("POYO_API_KEY not set — add it to ~/.bmp.env");
+        sendProgress(`Submitting Nano Banana 2 (${safeSize} · ${safeRes})...`);
+        fullPath = await poyoGenerateToFile({
+          model: "nano-banana-2",
+          input: { prompt, size: safeSize, resolution: safeRes },
+          apiKey: poyoKey,
+          destDir: dir,
+          baseName: sku,
+          sendProgress
+        });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      sendProgress(`Error: ${msg}`);
+      try {
+        rmdirSync(dir);
+      } catch {
+      }
+      return { success: false, sku, outputPath: "", facePath: "", error: msg };
+    }
+    let facePath = "";
+    let faceError;
+    if (!poyoKey) {
+      faceError = "POYO_API_KEY not set — face macro skipped";
+      sendProgress(faceError);
+    } else {
+      try {
+        sendProgress("▶ Macro face shot — uploading reference...");
+        const refUrl = await uploadRefToPOYO(fullPath, poyoKey);
+        facePath = await poyoGenerateToFile({
+          model: "nano-banana-2-edit",
+          input: { prompt: MACRO_FACE_PROMPT, size: "4:5", resolution: "2K", image_urls: [refUrl] },
+          apiKey: poyoKey,
+          destDir: dir,
+          baseName: `${sku}_FACE`,
+          sendProgress
+        });
+      } catch (err) {
+        faceError = err instanceof Error ? err.message : String(err);
+        sendProgress(`Face macro failed — ${faceError}`);
+      }
+    }
+    if (facePath) sendProgress(`${sku} complete ✓ — full body + face macro`);
+    return { success: true, sku, outputPath: fullPath, facePath, error: faceError };
+  } finally {
+    reservedSkus.delete(sku);
+  }
+});
+handleWhenUnlocked("fire-video", async (event, { prompt, products: frames, videoModel, aspectRatio, resolution, duration }) => {
   if (typeof prompt !== "string" || prompt.trim().length === 0) throw new Error("Invalid prompt");
   if (!Array.isArray(frames) || frames.length > 9) throw new Error("Invalid frames");
   const apiKey = process.env.POYO_API_KEY;
@@ -768,8 +966,12 @@ function setupAutoUpdater(win) {
 app.whenReady().then(() => {
   protocol.handle("localfile", (request) => {
     const filePath = decodeURIComponent(request.url.slice("localfile://".length));
+    if (!unlocked || !knownLocalPaths.has(filePath)) {
+      return new Response("Forbidden", { status: 403 });
+    }
     return net.fetch(`file://${filePath}`);
   });
+  unlocked = Boolean(loadPrefs().unlockedAt);
   buildAppMenu();
   applyDockIcon(loadPrefs().iconStyle);
   const win = createWindow();

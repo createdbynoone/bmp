@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import LockScreen from './components/LockScreen'
 import { DropZone } from './components/DropZone'
 import { PromptOutput } from './components/PromptOutput'
@@ -7,10 +7,29 @@ import { UpdateBar } from './components/UpdateBar'
 import { SettingsModal } from './components/SettingsModal'
 import { PromptHistoryModal } from './components/PromptHistoryModal'
 import { VideoMode } from './components/VideoMode'
-import type { Provider, Mode } from './components/HiggsfieldButton'
+import { ModelMode } from './components/ModelMode'
+import { ActivityLog, type LogEntry } from './components/ActivityLog'
+import type { Provider, Mode, ModelEngine, ModelGender } from './components/HiggsfieldButton'
 
 type GenerateStatus = 'idle' | 'loading' | 'done' | 'error'
-type FireStatus = 'idle' | 'loading' | 'done' | 'error'
+type FireResult = 'idle' | 'done' | 'error'
+
+export interface ModelResult {
+  sku: string
+  gender: ModelGender
+  full: string
+  face: string
+}
+
+const LOG_CAP = 400
+
+// Preselects the SMF/SMM SKU category from the pasted prompt; the toggle in the
+// bottom bar can always override it ("woman" never matches \bman\b)
+function detectGender(prompt: string): ModelGender | null {
+  if (/\b(female|woman|women|girl|mujer|chica|femenin[ao]|she|her)\b/i.test(prompt)) return 'female'
+  if (/\b(male|man|men|hombre|chico|masculin[ao]|guy|he|him)\b/i.test(prompt)) return 'male'
+  return null
+}
 
 export default function App() {
   // ── Image mode state ──────────────────────────────────────────────────────
@@ -35,14 +54,35 @@ export default function App() {
   const [videoResolution, setVideoResolution] = useState('1080p')
   const [duration, setDuration] = useState(5)
 
+  // ── Model mode state (AI model creation) ──────────────────────────────────
+  const [modelPrompt, setModelPrompt] = useState('')
+  const [modelEngine, setModelEngine] = useState<ModelEngine>('nb2')
+  const [modelAspectRatio, setModelAspectRatio] = useState('4:5')
+  const [modelResolution, setModelResolution] = useState('2k')
+  const [modelGender, setModelGender] = useState<ModelGender>('female')
+  const [modelResults, setModelResults] = useState<ModelResult[]>([])
+
+  const handleModelPrompt = (p: string) => {
+    setModelPrompt(p)
+    const g = detectGender(p)
+    if (g) setModelGender(g)
+  }
+
   // ── Shared state ──────────────────────────────────────────────────────────
-  // Fire status + progress are scoped per mode so switching tabs never
-  // interrupts or hides an in-flight task — it keeps running in background
+  // Fire tasks are ref-counted per mode: nothing in the UI (generating a new
+  // prompt, switching provider/tab, firing another batch) resets or hides an
+  // in-flight task — it strictly runs until it finishes. Status is derived:
+  // loading while any task is active, otherwise the last settled result.
   const [mode, setMode] = useState<Mode>('image')
-  const [imageFireStatus, setImageFireStatus] = useState<FireStatus>('idle')
-  const [videoFireStatus, setVideoFireStatus] = useState<FireStatus>('idle')
-  const [imageProgress, setImageProgress] = useState<string[]>([])
-  const [videoProgress, setVideoProgress] = useState<string[]>([])
+  const [imageTasks, setImageTasks] = useState(0)
+  const [videoTasks, setVideoTasks] = useState(0)
+  const [modelTasks, setModelTasks] = useState(0)
+  const [imageResult, setImageResult] = useState<FireResult>('idle')
+  const [videoResult, setVideoResult] = useState<FireResult>('idle')
+  const [modelResult, setModelResult] = useState<FireResult>('idle')
+  const [imageLog, setImageLog] = useState<LogEntry[]>([])
+  const [videoLog, setVideoLog] = useState<LogEntry[]>([])
+  const [modelLog, setModelLog] = useState<LogEntry[]>([])
   const [memoryStats, setMemoryStats] = useState<{ total: number; fired: number } | null>(null)
   const [credits, setCredits] = useState<{ credits: number | null; plan: string | null } | null>(null)
   const [appVersion, setAppVersion] = useState('')
@@ -51,6 +91,26 @@ export default function App() {
 
   const [authState, setAuthState] = useState<'checking' | 'locked' | 'unlocked'>('checking')
   const [lockUntil, setLockUntil] = useState(0)
+
+  // Guard against accidental double-clicks now that fire stays enabled
+  // while other batches run in parallel
+  const lastFireRef = useRef(0)
+  const fireGate = () => {
+    const now = Date.now()
+    if (now - lastFireRef.current < 600) return false
+    lastFireRef.current = now
+    return true
+  }
+
+  const logSetters = { image: setImageLog, video: setVideoLog, model: setModelLog } as const
+
+  const pushLog = (scope: 'image' | 'video' | 'model', line: string) => {
+    logSetters[scope]((prev) => [...prev.slice(-LOG_CAP), { ts: Date.now(), line }])
+  }
+
+  const imageFireStatus = imageTasks > 0 ? 'loading' : imageResult
+  const videoFireStatus = videoTasks > 0 ? 'loading' : videoResult
+  const modelFireStatus = modelTasks > 0 ? 'loading' : modelResult
 
   useEffect(() => {
     window.bmp.auth.status().then(res => {
@@ -62,8 +122,8 @@ export default function App() {
   useEffect(() => {
     if (!window.bmp || authState !== 'unlocked') return
     const cleanup = window.bmp.onHiggsfieldProgress((evt) => {
-      if (evt.scope === 'video') setVideoProgress((prev) => [...prev, evt.line])
-      else setImageProgress((prev) => [...prev, evt.line])
+      const set = logSetters[evt.scope] ?? setImageLog
+      set((prev) => [...prev.slice(-LOG_CAP), { ts: Date.now(), line: evt.line }])
     })
     return cleanup
   }, [authState])
@@ -80,9 +140,9 @@ export default function App() {
 
   const handleProviderChange = (p: Provider) => {
     setProvider(p)
-    // Both providers accept all IMAGE_RATIOS — only HF lacks 4k
+    // Both providers accept all IMAGE_RATIOS — only HF lacks 4k.
+    // Running tasks captured their provider at fire time; never reset them here.
     if (p === 'higgsfield' && resolution === '4k') setResolution('2k')
-    setImageFireStatus('idle'); setImageProgress([])
   }
 
   // Switching tabs only changes the view — running tasks keep going in background
@@ -93,20 +153,26 @@ export default function App() {
 
   const handleGenerate = async () => {
     if (!canGenerate) return
-    setGenerateStatus('loading'); setPrompt(''); setError(''); setImageFireStatus('idle'); setImageProgress([])
+    // Only prompt-generation state is touched here — any fire task in flight
+    // keeps its log and status untouched and runs to completion
+    setGenerateStatus('loading'); setPrompt(''); setError('')
+    pushLog('image', '▶ Claude · generating prompt...')
     try {
       const result = await window.bmp.generatePrompt({ refs, products, description })
       setPrompt(result.prompt); setMemoryId(result.memoryId); setGenerateStatus('done')
+      pushLog('image', 'Prompt ready ✓')
       window.bmp?.getMemoryStats?.().then((s: { total: number; fired: number }) => setMemoryStats(s))
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Generation failed'); setGenerateStatus('error')
+      const msg = err instanceof Error ? err.message : 'Generation failed'
+      setError(msg); setGenerateStatus('error')
+      pushLog('image', `Prompt generation failed — ${msg}`)
     }
   }
 
   // ── Image: fire ───────────────────────────────────────────────────────────
-  const markFired = () => {
-    if (!memoryId) return
-    window.bmp?.markPromptFired?.({ id: memoryId, aspectRatio })
+  const markFired = (id: string | null) => {
+    if (!id) return
+    window.bmp?.markPromptFired?.({ id, aspectRatio })
     window.bmp?.getMemoryStats?.().then((s: { total: number; fired: number }) => setMemoryStats(s))
   }
 
@@ -130,41 +196,55 @@ export default function App() {
   }
 
   const handleFire = async () => {
-    if (!prompt) return
-    setImageFireStatus('loading'); setImageProgress([])
+    if (!prompt || !fireGate()) return
+    const firedMemoryId = memoryId
+    setImageTasks((n) => n + 1)
+    pushLog('image', `▶ ${provider === 'poyo' ? 'Nano Banana 2' : 'Higgsfield'} ×${variations} · ${aspectRatio} · ${resolution.toUpperCase()}`)
     try {
       const succeeded = await fireBatch(Array.from({ length: variations }, () => prompt))
       const failed = variations - succeeded
       if (variations > 1) {
-        setImageProgress((prev) => [...prev, failed === 0 ? `All ${variations} variations generated.` : succeeded === 0 ? `All ${variations} variations failed.` : `${succeeded}/${variations} generated — ${failed} failed.`])
+        pushLog('image', failed === 0 ? `All ${variations} variations generated.` : succeeded === 0 ? `All ${variations} variations failed.` : `${succeeded}/${variations} generated — ${failed} failed.`)
       }
-      setImageFireStatus(succeeded > 0 ? 'done' : 'error')
-      if (succeeded > 0) markFired()
+      setImageResult(succeeded > 0 ? 'done' : 'error')
+      if (succeeded > 0) markFired(firedMemoryId)
     } catch (err) {
-      setImageFireStatus('error'); setImageProgress((prev) => [...prev, err instanceof Error ? err.message : 'Unknown error'])
+      setImageResult('error'); pushLog('image', err instanceof Error ? err.message : 'Unknown error')
+    } finally {
+      setImageTasks((n) => n - 1)
     }
   }
 
-  // ── Image: fire 4 angle variations (Claude rewrites camera work) ──────────
-  const handleFireAngles = async () => {
-    if (!prompt) return
-    setImageFireStatus('loading'); setImageProgress(['Generating angle variations with Claude...'])
+  // ── Model: fire (AI model creation — full shot + auto macro face + SKU) ───
+  const handleFireModel = async () => {
+    if (!modelPrompt.trim() || !fireGate()) return
+    const gender = modelGender
+    setModelTasks((n) => n + 1)
+    pushLog('model', `▶ ${modelEngine === 'recraft' ? 'Recraft v4.1 Pro' : 'Nano Banana 2'} · ${modelAspectRatio}${modelEngine === 'nb2' ? ` · ${modelResolution.toUpperCase()}` : ' · 4MP'} · ${gender === 'male' ? 'SMM' : 'SMF'}`)
     try {
-      const { variants } = await window.bmp.generateAngleVariations({ prompt })
-      setImageProgress((prev) => [...prev, ...variants.map((v) => `∠ ${v.label}`), `Firing ${variants.length} angles...`])
-      const succeeded = await fireBatch(variants.map((v) => v.prompt))
-      setImageProgress((prev) => [...prev, succeeded === variants.length ? `All ${variants.length} angles generated.` : succeeded === 0 ? `All ${variants.length} angles failed.` : `${succeeded}/${variants.length} angles generated.`])
-      setImageFireStatus(succeeded > 0 ? 'done' : 'error')
-      if (succeeded > 0) markFired()
+      const result = await window.bmp.fireModel({
+        prompt: modelPrompt,
+        engine: modelEngine,
+        aspectRatio: modelAspectRatio,
+        resolution: modelResolution,
+        gender,
+      })
+      if (result.success && result.outputPath) {
+        setModelResults((prev) => [{ sku: result.sku, gender, full: result.outputPath, face: result.facePath }, ...prev])
+      }
+      setModelResult(result.success ? 'done' : 'error')
     } catch (err) {
-      setImageFireStatus('error'); setImageProgress((prev) => [...prev, err instanceof Error ? err.message : 'Unknown error'])
+      setModelResult('error'); pushLog('model', err instanceof Error ? err.message : 'Unknown error')
+    } finally {
+      setModelTasks((n) => n - 1)
     }
   }
 
   // ── Video: fire ───────────────────────────────────────────────────────────
   const handleFireVideo = async () => {
-    if (!videoPrompt.trim()) return
-    setVideoFireStatus('loading'); setVideoProgress([])
+    if (!videoPrompt.trim() || !fireGate()) return
+    setVideoTasks((n) => n + 1)
+    pushLog('video', `▶ Seedance 2 (${videoModel === 'seedance-2' ? 'PRO' : 'FAST'}) · ${videoAspectRatio} · ${videoResolution} · ${duration}s`)
     try {
       const result = await window.bmp.fireVideo({
         prompt: videoPrompt,
@@ -174,27 +254,37 @@ export default function App() {
         resolution: videoResolution,
         duration,
       })
-      setVideoFireStatus(result.success ? 'done' : 'error')
+      setVideoResult(result.success ? 'done' : 'error')
     } catch (err) {
-      setVideoFireStatus('error'); setVideoProgress((prev) => [...prev, err instanceof Error ? err.message : 'Unknown error'])
+      setVideoResult('error'); pushLog('video', err instanceof Error ? err.message : 'Unknown error')
+    } finally {
+      setVideoTasks((n) => n - 1)
     }
   }
 
   const reset = () => {
     if (mode === 'image') {
       setRefs([]); setProducts([]); setDescription(''); setPrompt(''); setGenerateStatus('idle'); setMemoryId(null); setVariations(1); setError('')
-      setImageFireStatus('idle'); setImageProgress([])
+      // Keep the log alive if tasks are still running — they finish regardless
+      if (imageTasks === 0) { setImageResult('idle'); setImageLog([]) }
+    } else if (mode === 'model') {
+      setModelPrompt(''); setModelResults([])
+      if (modelTasks === 0) { setModelResult('idle'); setModelLog([]) }
     } else {
       setVideoPrompt(''); setFrames([])
-      setVideoFireStatus('idle'); setVideoProgress([])
+      if (videoTasks === 0) { setVideoResult('idle'); setVideoLog([]) }
     }
   }
 
   const footerLabel = mode === 'video'
     ? `seedance-2 · ${videoAspectRatio} · ${videoResolution} · ${duration}s`
-    : `${provider === 'higgsfield' ? 'higgsfield' : 'nano-banana-2'} · ${aspectRatio} · ${resolution.toUpperCase()}`
+    : mode === 'model'
+      ? `${modelEngine === 'recraft' ? 'recraft-v4.1-pro' : 'nano-banana-2'} · ${modelAspectRatio}${modelEngine === 'nb2' ? ` · ${modelResolution.toUpperCase()}` : ' · 4MP'} · ${modelGender === 'male' ? 'SMM' : 'SMF'} + face macro`
+      : `${provider === 'higgsfield' ? 'higgsfield' : 'nano-banana-2'} · ${aspectRatio} · ${resolution.toUpperCase()}`
 
-  const fireDisabled = mode === 'video' ? !videoPrompt.trim() : !prompt
+  const fireDisabled = mode === 'video' ? !videoPrompt.trim() : mode === 'model' ? !modelPrompt.trim() : !prompt
+
+  const showImageLog = imageLog.length > 0 || imageTasks > 0
 
   if (authState === 'checking') return null
 
@@ -230,8 +320,8 @@ export default function App() {
       {/* Mode tabs */}
       <div className="flex-shrink-0 px-4 pt-3 pb-0">
         <div className="flex items-center gap-1 bg-white/[0.04] border border-border rounded-lg p-1 w-fit">
-          {(['image', 'video'] as Mode[]).map((m) => {
-            const busy = m === 'image' ? imageFireStatus === 'loading' : videoFireStatus === 'loading'
+          {(['image', 'video', 'model'] as Mode[]).map((m) => {
+            const busy = m === 'image' ? imageTasks > 0 : m === 'model' ? modelTasks > 0 : videoTasks > 0
             return (
               <button
                 key={m}
@@ -241,7 +331,7 @@ export default function App() {
                   ${mode === m ? 'bg-white/12 text-white' : 'text-text-muted hover:text-white/60'}
                 `}
               >
-                {m === 'image' ? 'Image' : 'Video'}
+                {m === 'image' ? 'Image' : m === 'video' ? 'Video' : 'Model'}
                 {busy && <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse flex-shrink-0" />}
               </button>
             )
@@ -254,7 +344,7 @@ export default function App() {
         {mode === 'image' ? (
           <>
             {/* Drop zones */}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-3 flex-shrink-0">
               <div className="bg-surface border border-border rounded-lg p-3 flex flex-col gap-2">
                 <label className="text-[11.7px] font-heading font-semibold uppercase tracking-widest text-text-secondary">
                   References <span className="text-text-muted">(composition / mood)</span>
@@ -270,7 +360,7 @@ export default function App() {
             </div>
 
             {/* Description */}
-            <div className="bg-surface border border-border rounded-lg p-3 flex flex-col gap-2">
+            <div className="bg-surface border border-border rounded-lg p-3 flex flex-col gap-2 flex-shrink-0">
               <label className="text-[11.7px] font-heading font-semibold uppercase tracking-widest text-text-secondary">Brief Description</label>
               <textarea
                 value={description}
@@ -282,7 +372,7 @@ export default function App() {
             </div>
 
             {/* Generate + history */}
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-shrink-0">
               <button
                 onClick={handleGenerate}
                 disabled={!canGenerate || generateStatus === 'loading'}
@@ -306,34 +396,51 @@ export default function App() {
             </div>
 
             {error && (
-              <div className="bg-red-500/5 border border-red-500/20 rounded-lg px-4 py-3">
+              <div className="bg-red-500/5 border border-red-500/20 rounded-lg px-4 py-3 flex-shrink-0">
                 <p className="text-[13.7px] text-red-400 font-mono">{error}</p>
               </div>
             )}
 
-            {prompt && <PromptOutput prompt={prompt} />}
-
-            {imageProgress.length > 0 && (
-              <div className="bg-[#0f0f0f] border border-border rounded-lg px-3 py-2 max-h-[80px] overflow-y-auto flex-shrink-0">
-                {imageProgress.map((line, i) => (
-                  <p key={i} className="text-[11.7px] font-mono text-text-secondary leading-relaxed">{line}</p>
-                ))}
-              </div>
+            {/* Prompt + activity share the remaining height — no dead space.
+                flex-basis 0 keeps each panel scrolling internally instead of
+                stretching the page */}
+            {prompt && (
+              <PromptOutput prompt={prompt} className={showImageLog ? 'flex-[3] min-h-[140px]' : 'flex-1 min-h-[140px]'} />
             )}
 
-            {!prompt && generateStatus === 'idle' && (
+            {showImageLog && (
+              <ActivityLog
+                entries={imageLog}
+                running={imageTasks}
+                onClear={() => { setImageLog([]); setImageResult('idle') }}
+                className={prompt ? 'flex-[2] min-h-[110px]' : 'flex-1 min-h-[110px]'}
+              />
+            )}
+
+            {!prompt && !showImageLog && generateStatus === 'idle' && (
               <div className="flex-1 flex items-center justify-center py-6">
                 <p className="text-[11.7px] text-text-muted uppercase tracking-[0.2em] font-heading">Drop refs + product · Write brief · Generate</p>
               </div>
             )}
           </>
+        ) : mode === 'model' ? (
+          <ModelMode
+            prompt={modelPrompt}
+            onPrompt={handleModelPrompt}
+            results={modelResults}
+            entries={modelLog}
+            running={modelTasks}
+            onClearLog={() => { setModelLog([]); setModelResult('idle') }}
+          />
         ) : (
           <VideoMode
             prompt={videoPrompt}
             onPrompt={setVideoPrompt}
             frames={frames}
             onFrames={setFrames}
-            progress={videoProgress}
+            entries={videoLog}
+            running={videoTasks}
+            onClearLog={() => { setVideoLog([]); setVideoResult('idle') }}
           />
         )}
       </div>
@@ -341,9 +448,9 @@ export default function App() {
       {/* Bottom bar */}
       <div className="flex-shrink-0 border-t border-border px-4 py-3">
         <HiggsfieldButton
-          status={mode === 'video' ? videoFireStatus : imageFireStatus}
-          onClick={mode === 'video' ? handleFireVideo : handleFire}
-          onAngles={handleFireAngles}
+          status={mode === 'video' ? videoFireStatus : mode === 'model' ? modelFireStatus : imageFireStatus}
+          running={mode === 'video' ? videoTasks : mode === 'model' ? modelTasks : imageTasks}
+          onClick={mode === 'video' ? handleFireVideo : mode === 'model' ? handleFireModel : handleFire}
           disabled={fireDisabled}
           mode={mode}
           provider={provider}
@@ -362,6 +469,14 @@ export default function App() {
           onVideoResolution={setVideoResolution}
           duration={duration}
           onDuration={setDuration}
+          modelEngine={modelEngine}
+          onModelEngine={setModelEngine}
+          modelAspectRatio={modelAspectRatio}
+          onModelAspectRatio={setModelAspectRatio}
+          modelResolution={modelResolution}
+          onModelResolution={setModelResolution}
+          modelGender={modelGender}
+          onModelGender={setModelGender}
         />
       </div>
 

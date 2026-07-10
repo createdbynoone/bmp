@@ -1,14 +1,17 @@
 import React, { useRef, useState, useCallback, useMemo } from 'react'
+import { ActivityLog, type LogEntry } from './ActivityLog'
 
 interface VideoModeProps {
   prompt: string
   onPrompt: (p: string) => void
   frames: string[]
   onFrames: (f: string[]) => void
-  progress: string[]
+  entries: LogEntry[]
+  running: number
+  onClearLog: () => void
 }
 
-export function VideoMode({ prompt, onPrompt, frames, onFrames, progress }: VideoModeProps) {
+export function VideoMode({ prompt, onPrompt, frames, onFrames, entries, running, onClearLog }: VideoModeProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [draggingOver, setDraggingOver] = useState(false)
 
@@ -130,7 +133,7 @@ export function VideoMode({ prompt, onPrompt, frames, onFrames, progress }: Vide
       </div>
 
       {/* Prompt textarea */}
-      <div className="bg-surface border border-border rounded-lg p-3 flex flex-col gap-2 flex-1 min-h-0">
+      <div className={`bg-surface border border-border rounded-lg p-3 flex flex-col gap-2 min-h-0 ${entries.length > 0 || running > 0 ? 'flex-[2] min-h-[150px]' : 'flex-1'}`}>
         <div className="flex items-center justify-between">
           <label className="text-[11.7px] font-heading font-semibold uppercase tracking-widest text-text-secondary">
             Video Prompt
@@ -154,13 +157,9 @@ export function VideoMode({ prompt, onPrompt, frames, onFrames, progress }: Vide
         />
       </div>
 
-      {/* Progress log */}
-      {progress.length > 0 && (
-        <div className="bg-[#0f0f0f] border border-border rounded-lg px-3 py-2 max-h-[64px] overflow-y-auto flex-shrink-0">
-          {progress.map((line, i) => (
-            <p key={i} className="text-[11.7px] font-mono text-text-secondary leading-relaxed">{line}</p>
-          ))}
-        </div>
+      {/* Activity log — shares the remaining height with the prompt, no dead space */}
+      {(entries.length > 0 || running > 0) && (
+        <ActivityLog entries={entries} running={running} onClear={onClearLog} className="flex-1 min-h-[110px]" />
       )}
     </div>
   )

@@ -6984,6 +6984,79 @@ function requireClient() {
 }
 var clientExports = requireClient();
 const ReactDOM = /* @__PURE__ */ getDefaultExportFromCjs(clientExports);
+function LockScreen({ initialLockUntil, onUnlocked }) {
+  const [key, setKey] = reactExports.useState("");
+  const [error, setError] = reactExports.useState(false);
+  const [shake, setShake] = reactExports.useState(false);
+  const [submitting, setSubmitting] = reactExports.useState(false);
+  const [lockUntil, setLockUntil] = reactExports.useState(initialLockUntil);
+  const [now, setNow] = reactExports.useState(Date.now());
+  const inputRef = reactExports.useRef(null);
+  const locked = lockUntil > now;
+  reactExports.useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+  reactExports.useEffect(() => {
+    if (!locked) return;
+    const t = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(t);
+  }, [locked]);
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (locked || submitting || !key) return;
+    setSubmitting(true);
+    try {
+      const res = await window.bmp.auth.unlock(key);
+      if (res.ok) {
+        onUnlocked();
+        return;
+      }
+      setLockUntil(res.lockUntil);
+      setError(true);
+      setShake(true);
+      setKey("");
+      setTimeout(() => setShake(false), 400);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+  const secondsLeft = Math.max(0, Math.ceil((lockUntil - now) / 1e3));
+  return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "titlebar-drag w-full h-screen flex flex-col items-center justify-center bg-bg", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("form", { onSubmit: handleSubmit, className: `titlebar-nodrag flex flex-col items-center gap-8 max-w-sm w-full px-8 ${shake ? "animate-shake" : ""}`, children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "text-center", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("h1", { className: "font-heading text-[19px] font-semibold text-text-primary tracking-tight uppercase", children: "Locked" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-[12.7px] text-text-secondary mt-1", children: "Enter the key to unlock BMP" })
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "w-full flex flex-col gap-3", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx(
+        "input",
+        {
+          ref: inputRef,
+          type: "password",
+          value: key,
+          onChange: (e) => {
+            setKey(e.target.value);
+            setError(false);
+          },
+          disabled: locked || submitting,
+          autoComplete: "off",
+          spellCheck: false,
+          placeholder: "Key",
+          className: "w-full px-4 py-3 rounded-xl bg-surface border border-border text-text-primary text-[14.7px] tracking-widest text-center placeholder:text-text-muted focus:outline-none focus:border-accent/60 disabled:opacity-40 transition-colors"
+        }
+      ),
+      /* @__PURE__ */ jsxRuntimeExports.jsx(
+        "button",
+        {
+          type: "submit",
+          disabled: locked || submitting || !key,
+          className: "w-full px-5 py-3 rounded-xl bg-accent text-bg font-medium text-[13.7px] hover:bg-accent/90 active:scale-[0.99] transition-all disabled:opacity-40",
+          children: locked ? `Try again in ${secondsLeft}s` : submitting ? "Checking…" : "Unlock"
+        }
+      )
+    ] }),
+    error && !locked && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-[12.7px] text-red-400 text-center px-2 -mt-2", children: "Incorrect key" })
+  ] }) });
+}
 function DropZone({ label, multiple = false, files, onFiles }) {
   const [dragging, setDragging] = reactExports.useState(false);
   const handleDrop = reactExports.useCallback(
@@ -7064,15 +7137,15 @@ function DropZone({ label, multiple = false, files, onFiles }) {
     }) })
   ] });
 }
-function PromptOutput({ prompt }) {
+function PromptOutput({ prompt, className = "" }) {
   const [copied, setCopied] = reactExports.useState(false);
   const copy = async () => {
     await navigator.clipboard.writeText(prompt);
     setCopied(true);
     setTimeout(() => setCopied(false), 2e3);
   };
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "relative bg-surface border border-border rounded-lg overflow-hidden", children: [
-    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between px-4 py-2 border-b border-border", children: [
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: `relative bg-surface border border-border rounded-lg overflow-hidden flex flex-col min-h-0 ${className}`, children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between px-4 py-2 border-b border-border flex-shrink-0", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[11.7px] font-medium uppercase tracking-widest text-text-secondary font-heading", children: "Generated Prompt" }),
       /* @__PURE__ */ jsxRuntimeExports.jsx(
         "button",
@@ -7096,7 +7169,7 @@ function PromptOutput({ prompt }) {
         }
       )
     ] }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("pre", { className: "prompt-output p-4 text-[13.7px] font-mono text-text-primary leading-relaxed whitespace-pre-wrap overflow-auto max-h-[200px]", children: prompt })
+    /* @__PURE__ */ jsxRuntimeExports.jsx("pre", { className: "prompt-output p-4 text-[13.7px] font-mono text-text-primary leading-relaxed whitespace-pre-wrap overflow-auto flex-1 min-h-0", children: prompt })
   ] });
 }
 const IMAGE_RATIOS = ["9:16", "4:5", "1:1", "16:9"];
@@ -7124,6 +7197,15 @@ function NanoBananaLogo() {
     /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "font-sans font-semibold text-[14.7px] tracking-wide", children: "Nano Banana" })
   ] });
 }
+function RecraftLogo() {
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "flex items-center gap-2", children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("svg", { width: "13", height: "13", viewBox: "0 0 24 24", fill: "none", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("rect", { x: "3", y: "3", width: "18", height: "18", rx: "4", stroke: "currentColor", strokeWidth: "1.8" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("path", { d: "M8 16V8h4.5a2.75 2.75 0 0 1 0 5.5H8M12 13.5l4 2.5", stroke: "currentColor", strokeWidth: "1.8", strokeLinecap: "round", strokeLinejoin: "round" })
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "font-sans font-semibold text-[14.7px] tracking-wide", children: "Recraft v4.1 Pro" })
+  ] });
+}
 function SeedanceLogo() {
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "flex items-center gap-2", children: [
     /* @__PURE__ */ jsxRuntimeExports.jsxs("svg", { width: "13", height: "13", viewBox: "0 0 24 24", fill: "none", children: [
@@ -7142,8 +7224,8 @@ function AccentPill({ active, disabled: dis, onClick: h, children }) {
 }
 function HiggsfieldButton({
   status,
+  running,
   onClick,
-  onAngles,
   disabled,
   mode,
   provider,
@@ -7161,48 +7243,46 @@ function HiggsfieldButton({
   videoResolution,
   onVideoResolution,
   duration,
-  onDuration
+  onDuration,
+  modelEngine,
+  onModelEngine,
+  modelAspectRatio,
+  onModelAspectRatio,
+  modelResolution,
+  onModelResolution,
+  modelGender,
+  onModelGender
 }) {
   const isLoading = status === "loading";
   const div = /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "w-px h-4 bg-border flex-shrink-0" });
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-2", children: [
     mode === "image" ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center bg-white/5 border border-border rounded-md p-[3px] flex-shrink-0", children: ["higgsfield", "poyo"].map((p) => /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => onProvider(p), disabled: isLoading, className: `px-2.5 py-[5px] rounded-[4px] text-[11px] font-heading font-semibold uppercase tracking-widest transition-all duration-150 ${provider === p ? "bg-white/15 text-white" : "text-text-muted hover:text-white/60"} ${isLoading ? "cursor-not-allowed opacity-40" : "cursor-pointer"}`, children: p === "higgsfield" ? "HF" : "NB2" }, p)) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center bg-white/5 border border-border rounded-md p-[3px] flex-shrink-0", children: ["higgsfield", "poyo"].map((p) => /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => onProvider(p), className: `px-2.5 py-[5px] rounded-[4px] text-[11px] font-heading font-semibold uppercase tracking-widest transition-all duration-150 cursor-pointer ${provider === p ? "bg-white/15 text-white" : "text-text-muted hover:text-white/60"}`, children: p === "higgsfield" ? "HF" : "NB2" }, p)) }),
       div,
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1 flex-shrink-0", children: IMAGE_RATIOS.map((r) => /* @__PURE__ */ jsxRuntimeExports.jsx(Pill, { active: aspectRatio === r, disabled: isLoading, onClick: () => onAspectRatio(r), children: r }, r)) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1 flex-shrink-0", children: IMAGE_RATIOS.map((r) => /* @__PURE__ */ jsxRuntimeExports.jsx(Pill, { active: aspectRatio === r, disabled: false, onClick: () => onAspectRatio(r), children: r }, r)) }),
       div,
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1 flex-shrink-0", children: (provider === "higgsfield" ? HF_RESOLUTIONS : IMAGE_RESOLUTIONS).map((r) => /* @__PURE__ */ jsxRuntimeExports.jsx(AccentPill, { active: resolution === r, disabled: isLoading, onClick: () => onResolution(r), children: r.toUpperCase() }, r)) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1 flex-shrink-0", children: (provider === "higgsfield" ? HF_RESOLUTIONS : IMAGE_RESOLUTIONS).map((r) => /* @__PURE__ */ jsxRuntimeExports.jsx(AccentPill, { active: resolution === r, disabled: false, onClick: () => onResolution(r), children: r.toUpperCase() }, r)) }),
       div,
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1 flex-shrink-0", children: VARIATIONS.map((v) => /* @__PURE__ */ jsxRuntimeExports.jsxs(Pill, { active: variations === v, disabled: isLoading, onClick: () => onVariations(v), children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1 flex-shrink-0", children: VARIATIONS.map((v) => /* @__PURE__ */ jsxRuntimeExports.jsxs(Pill, { active: variations === v, disabled: false, onClick: () => onVariations(v), children: [
         "×",
         v
-      ] }, v)) }),
+      ] }, v)) })
+    ] }) : mode === "model" ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center bg-white/5 border border-border rounded-md p-[3px] flex-shrink-0", children: ["nb2", "recraft"].map((e) => /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => onModelEngine(e), className: `px-2.5 py-[5px] rounded-[4px] text-[11px] font-heading font-semibold uppercase tracking-widest transition-all duration-150 cursor-pointer ${modelEngine === e ? "bg-white/15 text-white" : "text-text-muted hover:text-white/60"}`, children: e === "nb2" ? "NB2" : "RECRAFT" }, e)) }),
       div,
-      /* @__PURE__ */ jsxRuntimeExports.jsxs(
-        "button",
-        {
-          onClick: onAngles,
-          disabled: disabled || isLoading,
-          title: "Claude genera 4 variaciones de ángulo del prompt (close-up, rotación, low-angle...) y las dispara",
-          className: `flex items-center gap-1.5 px-2.5 py-[7px] rounded-md text-[11.7px] font-mono font-semibold tracking-wide border transition-all duration-150 flex-shrink-0 ${disabled || isLoading ? "border-border text-text-muted cursor-not-allowed opacity-40" : "border-accent/50 bg-accent/5 text-accent hover:bg-accent/15 hover:border-accent/80 cursor-pointer"}`,
-          children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("svg", { width: "11", height: "11", viewBox: "0 0 14 14", fill: "none", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("path", { d: "M2 12L7 2", stroke: "currentColor", strokeWidth: "1.4", strokeLinecap: "round" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("path", { d: "M2 12h10", stroke: "currentColor", strokeWidth: "1.4", strokeLinecap: "round" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("path", { d: "M9 12a5.5 5.5 0 0 0-2.8-4.8", stroke: "currentColor", strokeWidth: "1.2", strokeLinecap: "round" })
-            ] }),
-            "ANGLES ×4"
-          ]
-        }
-      )
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1 flex-shrink-0", children: IMAGE_RATIOS.map((r) => /* @__PURE__ */ jsxRuntimeExports.jsx(Pill, { active: modelAspectRatio === r, disabled: false, onClick: () => onModelAspectRatio(r), children: r }, r)) }),
+      div,
+      modelEngine === "nb2" ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1 flex-shrink-0", children: IMAGE_RESOLUTIONS.map((r) => /* @__PURE__ */ jsxRuntimeExports.jsx(AccentPill, { active: modelResolution === r, disabled: false, onClick: () => onModelResolution(r), children: r.toUpperCase() }, r)) }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[11px] font-mono font-semibold text-accent/70 tracking-wide px-1 flex-shrink-0", title: "Recraft v4.1 Pro genera siempre a 4MP", children: "4MP PRO" }),
+      div,
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center bg-white/5 border border-border rounded-md p-[3px] flex-shrink-0", title: "Categoría SKU: SMF (female) / SMM (male)", children: ["female", "male"].map((g) => /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => onModelGender(g), className: `px-2.5 py-[5px] rounded-[4px] text-[11px] font-heading font-semibold uppercase tracking-widest transition-all duration-150 cursor-pointer ${modelGender === g ? "bg-accent/20 text-accent" : "text-text-muted hover:text-white/60"}`, children: g === "female" ? "SMF" : "SMM" }, g)) })
     ] }) : /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center bg-white/5 border border-border rounded-md p-[3px] flex-shrink-0", children: ["seedance-2", "seedance-2-fast"].map((m) => /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => onVideoModel(m), disabled: isLoading, className: `px-2.5 py-[5px] rounded-[4px] text-[11px] font-heading font-semibold uppercase tracking-widest transition-all duration-150 ${videoModel === m ? "bg-white/15 text-white" : "text-text-muted hover:text-white/60"} ${isLoading ? "cursor-not-allowed opacity-40" : "cursor-pointer"}`, children: m === "seedance-2" ? "PRO" : "FAST" }, m)) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center bg-white/5 border border-border rounded-md p-[3px] flex-shrink-0", children: ["seedance-2", "seedance-2-fast"].map((m) => /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => onVideoModel(m), className: `px-2.5 py-[5px] rounded-[4px] text-[11px] font-heading font-semibold uppercase tracking-widest transition-all duration-150 cursor-pointer ${videoModel === m ? "bg-white/15 text-white" : "text-text-muted hover:text-white/60"}`, children: m === "seedance-2" ? "PRO" : "FAST" }, m)) }),
       div,
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1 flex-shrink-0", children: VIDEO_RATIOS.map((r) => /* @__PURE__ */ jsxRuntimeExports.jsx(Pill, { active: videoAspectRatio === r, disabled: isLoading, onClick: () => onVideoAspectRatio(r), children: r }, r)) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1 flex-shrink-0", children: VIDEO_RATIOS.map((r) => /* @__PURE__ */ jsxRuntimeExports.jsx(Pill, { active: videoAspectRatio === r, disabled: false, onClick: () => onVideoAspectRatio(r), children: r }, r)) }),
       div,
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1 flex-shrink-0", children: VIDEO_RESOLUTIONS.map((r) => /* @__PURE__ */ jsxRuntimeExports.jsx(AccentPill, { active: videoResolution === r, disabled: isLoading, onClick: () => onVideoResolution(r), children: r.toUpperCase() }, r)) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1 flex-shrink-0", children: VIDEO_RESOLUTIONS.map((r) => /* @__PURE__ */ jsxRuntimeExports.jsx(AccentPill, { active: videoResolution === r, disabled: false, onClick: () => onVideoResolution(r), children: r.toUpperCase() }, r)) }),
       div,
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1 flex-shrink-0", children: VIDEO_DURATIONS.map((d) => /* @__PURE__ */ jsxRuntimeExports.jsxs(Pill, { active: duration === d, disabled: isLoading, onClick: () => onDuration(d), children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1 flex-shrink-0", children: VIDEO_DURATIONS.map((d) => /* @__PURE__ */ jsxRuntimeExports.jsxs(Pill, { active: duration === d, disabled: false, onClick: () => onDuration(d), children: [
         d,
         "s"
       ] }, d)) })
@@ -7211,15 +7291,20 @@ function HiggsfieldButton({
       "button",
       {
         onClick,
-        disabled: disabled || isLoading,
-        className: `flex-1 flex items-center justify-center gap-2 py-[7px] px-4 rounded-lg border transition-all duration-150 ${isLoading ? "border-white/15 bg-white/5 text-white/40 cursor-not-allowed" : status === "done" ? "border-green-500/40 bg-green-500/5 text-green-400 hover:bg-green-500/10 cursor-pointer" : status === "error" ? "border-red-500/40 bg-red-500/5 text-red-400 hover:bg-red-500/10 cursor-pointer" : disabled ? "border-border bg-transparent text-text-muted cursor-not-allowed opacity-40" : "border-white/20 bg-white/5 text-white hover:bg-white/10 hover:border-white/40 active:scale-[0.99] cursor-pointer"}`,
+        disabled,
+        title: isLoading && !disabled ? "Task keeps running in background — click fires another batch in parallel" : void 0,
+        className: `flex-1 flex items-center justify-center gap-2 py-[7px] px-4 rounded-lg border transition-all duration-150 ${isLoading ? `border-accent/30 bg-accent/5 text-white/70 ${disabled ? "cursor-not-allowed" : "hover:bg-accent/10 hover:border-accent/50 cursor-pointer"}` : status === "done" ? "border-green-500/40 bg-green-500/5 text-green-400 hover:bg-green-500/10 cursor-pointer" : status === "error" ? "border-red-500/40 bg-red-500/5 text-red-400 hover:bg-red-500/10 cursor-pointer" : disabled ? "border-border bg-transparent text-text-muted cursor-not-allowed opacity-40" : "border-white/20 bg-white/5 text-white hover:bg-white/10 hover:border-white/40 active:scale-[0.99] cursor-pointer"}`,
         children: isLoading ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("svg", { className: "animate-spin flex-shrink-0", width: "12", height: "12", viewBox: "0 0 14 14", fill: "none", children: /* @__PURE__ */ jsxRuntimeExports.jsx("circle", { cx: "7", cy: "7", r: "5.5", stroke: "currentColor", strokeWidth: "1.5", strokeDasharray: "8 6", strokeLinecap: "round" }) }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[12.7px] font-heading font-semibold uppercase tracking-widest", children: mode === "video" ? "Generating video..." : "Generating..." })
+          /* @__PURE__ */ jsxRuntimeExports.jsx("svg", { className: "animate-spin flex-shrink-0 text-accent", width: "12", height: "12", viewBox: "0 0 14 14", fill: "none", children: /* @__PURE__ */ jsxRuntimeExports.jsx("circle", { cx: "7", cy: "7", r: "5.5", stroke: "currentColor", strokeWidth: "1.5", strokeDasharray: "8 6", strokeLinecap: "round" }) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-[12.7px] font-heading font-semibold uppercase tracking-widest", children: [
+            mode === "video" ? "Generating video" : "Generating",
+            running > 1 ? ` ×${running}` : ""
+          ] }),
+          !disabled && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[11px] font-mono text-white/35 normal-case tracking-normal", children: "+ fire again" })
         ] }) : status === "done" ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("svg", { width: "12", height: "12", viewBox: "0 0 14 14", fill: "none", children: /* @__PURE__ */ jsxRuntimeExports.jsx("path", { d: "M2 7l3.5 3.5 6.5-6.5", stroke: "currentColor", strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round" }) }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[12.7px] font-heading font-semibold uppercase tracking-widest", children: "Done" })
-        ] }) : status === "error" ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[12.7px] font-heading font-semibold uppercase tracking-widest text-red-400", children: "Error — retry" }) : mode === "video" ? /* @__PURE__ */ jsxRuntimeExports.jsx(SeedanceLogo, {}) : provider === "higgsfield" ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+        ] }) : status === "error" ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[12.7px] font-heading font-semibold uppercase tracking-widest text-red-400", children: "Error — retry" }) : mode === "video" ? /* @__PURE__ */ jsxRuntimeExports.jsx(SeedanceLogo, {}) : mode === "model" ? modelEngine === "recraft" ? /* @__PURE__ */ jsxRuntimeExports.jsx(RecraftLogo, {}) : /* @__PURE__ */ jsxRuntimeExports.jsx(NanoBananaLogo, {}) : provider === "higgsfield" ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx(HiggsfieldLogo, {}),
           variations > 1 && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-[11.7px] font-mono text-white/40 ml-1", children: [
             "×",
@@ -7463,7 +7548,57 @@ function PromptHistoryModal({ onUse, onClose }) {
     }
   ) });
 }
-function VideoMode({ prompt, onPrompt, frames, onFrames, progress }) {
+const timeFmt = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+function lineColor(line) {
+  const err = /error|failed|✗|not authenticated|no image|no video/i.test(line);
+  const ok = /✓|saved:|generated\.|uploaded/i.test(line);
+  if (err && ok) return "text-orange-400";
+  if (err) return "text-red-400";
+  if (ok) return "text-green-400/90";
+  if (line.startsWith("∠") || line.startsWith("▶")) return "text-accent";
+  if (/^(queued|processing|pending|running|waiting)/i.test(line)) return "text-text-muted";
+  return "text-text-secondary";
+}
+function ActivityLog({ entries, running, onClear, className = "" }) {
+  const bodyRef = reactExports.useRef(null);
+  const stickRef = reactExports.useRef(true);
+  reactExports.useEffect(() => {
+    const el = bodyRef.current;
+    if (el && stickRef.current) el.scrollTop = el.scrollHeight;
+  }, [entries, running]);
+  const handleScroll = () => {
+    const el = bodyRef.current;
+    if (el) stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 28;
+  };
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: `bg-[#0f0f0f] border border-border rounded-lg overflow-hidden flex flex-col min-h-0 ${className}`, children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between px-4 py-2 border-b border-border flex-shrink-0", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-2.5", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[11.7px] font-medium uppercase tracking-widest text-text-secondary font-heading", children: "Activity" }),
+        running > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "flex items-center gap-1.5 text-[11px] font-mono text-accent", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "w-1.5 h-1.5 rounded-full bg-accent animate-pulse flex-shrink-0" }),
+          running > 1 ? `${running} tasks running` : "task running"
+        ] })
+      ] }),
+      onClear && entries.length > 0 && running === 0 && /* @__PURE__ */ jsxRuntimeExports.jsx(
+        "button",
+        {
+          onClick: onClear,
+          className: "text-[11px] text-text-muted hover:text-text-secondary uppercase tracking-widest transition-colors",
+          children: "Clear"
+        }
+      )
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { ref: bodyRef, onScroll: handleScroll, className: "flex-1 min-h-0 overflow-y-auto px-4 py-2.5", children: [
+      entries.length === 0 && running > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-[11.7px] font-mono text-text-muted leading-relaxed", children: "waiting for provider..." }),
+      entries.map((e, i) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex gap-2.5 items-baseline", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[10.5px] font-mono text-white/25 tabular-nums flex-shrink-0 leading-[1.9]", children: timeFmt.format(e.ts) }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `text-[11.7px] font-mono leading-[1.9] break-words min-w-0 ${lineColor(e.line)}`, children: e.line })
+      ] }, i)),
+      running > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "inline-block w-[7px] h-[13px] bg-accent/70 animate-pulse ml-[52px] translate-y-[2px]" })
+    ] })
+  ] });
+}
+function VideoMode({ prompt, onPrompt, frames, onFrames, entries, running, onClearLog }) {
   const textareaRef = reactExports.useRef(null);
   const [draggingOver, setDraggingOver] = reactExports.useState(false);
   const usedIndices = reactExports.useMemo(() => {
@@ -7586,7 +7721,7 @@ function VideoMode({ prompt, onPrompt, frames, onFrames, progress }) {
         ]
       }
     ),
-    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "bg-surface border border-border rounded-lg p-3 flex flex-col gap-2 flex-1 min-h-0", children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: `bg-surface border border-border rounded-lg p-3 flex flex-col gap-2 min-h-0 ${entries.length > 0 || running > 0 ? "flex-[2] min-h-[150px]" : "flex-1"}`, children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("label", { className: "text-[11.7px] font-heading font-semibold uppercase tracking-widest text-text-secondary", children: "Video Prompt" }),
         missingTags.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-[11px] font-mono text-orange-400/80", children: [
@@ -7608,8 +7743,79 @@ function VideoMode({ prompt, onPrompt, frames, onFrames, progress }) {
         }
       )
     ] }),
-    progress.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "bg-[#0f0f0f] border border-border rounded-lg px-3 py-2 max-h-[64px] overflow-y-auto flex-shrink-0", children: progress.map((line, i) => /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-[11.7px] font-mono text-text-secondary leading-relaxed", children: line }, i)) })
+    (entries.length > 0 || running > 0) && /* @__PURE__ */ jsxRuntimeExports.jsx(ActivityLog, { entries, running, onClear: onClearLog, className: "flex-1 min-h-[110px]" })
   ] });
+}
+function ModelMode({ prompt, onPrompt, results, entries, running, onClearLog }) {
+  const [lightbox, setLightbox] = reactExports.useState(null);
+  const showLog = entries.length > 0 || running > 0;
+  const showResults = results.length > 0;
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col gap-3 h-full min-h-0", children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: `bg-surface border border-border rounded-lg p-3 flex flex-col gap-2 min-h-0 ${showResults || showLog ? "flex-shrink-0" : "flex-1"}`, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "text-[11.7px] font-heading font-semibold uppercase tracking-widest text-text-secondary", children: [
+          "Model Prompt ",
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-text-muted normal-case tracking-normal", children: "(paste — AI model creation)" })
+        ] }),
+        prompt.trim().length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => onPrompt(""), className: "text-[11px] text-text-muted hover:text-text-secondary uppercase tracking-widest transition-colors", children: "Clear" })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx(
+        "textarea",
+        {
+          value: prompt,
+          onChange: (e) => onPrompt(e.target.value),
+          placeholder: "Pega aquí el prompt del modelo de IA (rasgos, piel, pelo, pose, luz...) y dispara con NB2 o Recraft v4.1 Pro.",
+          className: `w-full bg-transparent text-[13.7px] text-text-primary placeholder:text-text-muted font-mono leading-relaxed focus:outline-none resize-none ${showResults || showLog ? "h-[110px]" : "flex-1 min-h-[110px]"}`
+        }
+      )
+    ] }),
+    showResults && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "bg-surface border border-border rounded-lg overflow-hidden flex flex-col min-h-[200px] flex-[3]", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between px-4 py-2 border-b border-border flex-shrink-0", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-[11.7px] font-medium uppercase tracking-widest text-text-secondary font-heading", children: [
+          "Models ",
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-text-muted", children: [
+            "· ",
+            results.length
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[11px] font-mono text-text-muted", children: "click to preview · Brotherhood/IA/Modelos" })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex-1 min-h-0 overflow-y-auto p-3", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "grid grid-cols-2 gap-3", children: results.map((r) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "rounded-lg border border-border overflow-hidden bg-black/30", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between px-3 py-1.5 border-b border-border", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[11.7px] font-mono font-bold text-accent tracking-widest", children: r.sku }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[10px] font-mono text-text-muted uppercase tracking-widest", children: r.gender })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "grid grid-cols-2", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { onClick: () => setLightbox(r.full), className: "relative group aspect-[4/5] bg-black/40 border-r border-border overflow-hidden", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("img", { src: `localfile://${r.full}`, alt: `${r.sku} full`, className: "w-full h-full object-cover block group-hover:scale-[1.02] transition-transform duration-200", loading: "lazy" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "absolute top-1.5 left-1.5 text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-black/70 text-white/70", children: "FULL" })
+          ] }),
+          r.face ? /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { onClick: () => setLightbox(r.face), className: "relative group aspect-[4/5] bg-black/40 overflow-hidden", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("img", { src: `localfile://${r.face}`, alt: `${r.sku} face`, className: "w-full h-full object-cover block group-hover:scale-[1.02] transition-transform duration-200", loading: "lazy" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "absolute top-1.5 left-1.5 text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-accent/80 text-black", children: "FACE" })
+          ] }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "aspect-[4/5] flex items-center justify-center", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-[10px] font-mono text-text-muted uppercase tracking-widest text-center px-2", children: [
+            "face macro",
+            /* @__PURE__ */ jsxRuntimeExports.jsx("br", {}),
+            "failed"
+          ] }) })
+        ] })
+      ] }, r.sku)) }) })
+    ] }),
+    showLog && /* @__PURE__ */ jsxRuntimeExports.jsx(ActivityLog, { entries, running, onClear: onClearLog, className: showResults ? "flex-[2] min-h-[100px]" : "flex-1 min-h-[110px]" }),
+    !showResults && !showLog && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex-shrink-0 flex items-center justify-center py-4", children: /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-[11.7px] text-text-muted uppercase tracking-[0.2em] font-heading", children: "Paste prompt · Pick engine · Fire — results appear here" }) }),
+    lightbox && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "fixed inset-0 bg-black/85 z-50 flex items-center justify-center p-8 cursor-zoom-out", onClick: () => setLightbox(null), children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("img", { src: `localfile://${lightbox}`, alt: "Preview", className: "max-w-full max-h-full object-contain rounded-lg shadow-2xl" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "absolute bottom-4 left-1/2 -translate-x-1/2 text-[11.7px] font-mono text-white/50", children: [
+        lightbox.split("/").pop(),
+        " · click to close"
+      ] })
+    ] })
+  ] });
+}
+function detectGender(prompt) {
+  if (/\b(female|woman|women|girl|mujer|chica|femenin[ao]|she|her)\b/i.test(prompt)) return "female";
+  if (/\b(male|man|men|hombre|chico|masculin[ao]|guy|he|him)\b/i.test(prompt)) return "male";
+  return null;
 }
 function App() {
   const [refs, setRefs] = reactExports.useState([]);
@@ -7630,25 +7836,66 @@ function App() {
   const [videoAspectRatio, setVideoAspectRatio] = reactExports.useState("9:16");
   const [videoResolution, setVideoResolution] = reactExports.useState("1080p");
   const [duration, setDuration] = reactExports.useState(5);
+  const [modelPrompt, setModelPrompt] = reactExports.useState("");
+  const [modelEngine, setModelEngine] = reactExports.useState("nb2");
+  const [modelAspectRatio, setModelAspectRatio] = reactExports.useState("4:5");
+  const [modelResolution, setModelResolution] = reactExports.useState("2k");
+  const [modelGender, setModelGender] = reactExports.useState("female");
+  const [modelResults, setModelResults] = reactExports.useState([]);
+  const handleModelPrompt = (p) => {
+    setModelPrompt(p);
+    const g = detectGender(p);
+    if (g) setModelGender(g);
+  };
   const [mode, setMode] = reactExports.useState("image");
-  const [imageFireStatus, setImageFireStatus] = reactExports.useState("idle");
-  const [videoFireStatus, setVideoFireStatus] = reactExports.useState("idle");
-  const [imageProgress, setImageProgress] = reactExports.useState([]);
-  const [videoProgress, setVideoProgress] = reactExports.useState([]);
+  const [imageTasks, setImageTasks] = reactExports.useState(0);
+  const [videoTasks, setVideoTasks] = reactExports.useState(0);
+  const [modelTasks, setModelTasks] = reactExports.useState(0);
+  const [imageResult, setImageResult] = reactExports.useState("idle");
+  const [videoResult, setVideoResult] = reactExports.useState("idle");
+  const [modelResult, setModelResult] = reactExports.useState("idle");
+  const [imageLog, setImageLog] = reactExports.useState([]);
+  const [videoLog, setVideoLog] = reactExports.useState([]);
+  const [modelLog, setModelLog] = reactExports.useState([]);
   const [memoryStats, setMemoryStats] = reactExports.useState(null);
   const [credits, setCredits] = reactExports.useState(null);
   const [appVersion, setAppVersion] = reactExports.useState("");
   const [showSettings, setShowSettings] = reactExports.useState(false);
   const [showLoginModal, setShowLoginModal] = reactExports.useState(false);
+  const [authState, setAuthState] = reactExports.useState("checking");
+  const [lockUntil, setLockUntil] = reactExports.useState(0);
+  const lastFireRef = reactExports.useRef(0);
+  const fireGate = () => {
+    const now = Date.now();
+    if (now - lastFireRef.current < 600) return false;
+    lastFireRef.current = now;
+    return true;
+  };
+  const logSetters = { image: setImageLog, video: setVideoLog, model: setModelLog };
+  const pushLog = (scope, line) => {
+    logSetters[scope]((prev) => [...prev.slice(-400), { ts: Date.now(), line }]);
+  };
+  const imageFireStatus = imageTasks > 0 ? "loading" : imageResult;
+  const videoFireStatus = videoTasks > 0 ? "loading" : videoResult;
+  const modelFireStatus = modelTasks > 0 ? "loading" : modelResult;
   reactExports.useEffect(() => {
-    if (!window.bmp) return;
-    const cleanup = window.bmp.onHiggsfieldProgress((evt) => {
-      if (evt.scope === "video") setVideoProgress((prev) => [...prev, evt.line]);
-      else setImageProgress((prev) => [...prev, evt.line]);
+    window.bmp.auth.status().then((res) => {
+      if (res.locked) {
+        setLockUntil(res.lockUntil);
+        setAuthState("locked");
+      } else setAuthState("unlocked");
     });
-    return cleanup;
   }, []);
   reactExports.useEffect(() => {
+    if (!window.bmp || authState !== "unlocked") return;
+    const cleanup = window.bmp.onHiggsfieldProgress((evt) => {
+      const set = logSetters[evt.scope] ?? setImageLog;
+      set((prev) => [...prev.slice(-400), { ts: Date.now(), line: evt.line }]);
+    });
+    return cleanup;
+  }, [authState]);
+  reactExports.useEffect(() => {
+    if (authState !== "unlocked") return;
     window.bmp?.checkHiggsfieldAuth?.().then((res) => {
       if (!res.authenticated) {
         setShowLoginModal(true);
@@ -7658,12 +7905,10 @@ function App() {
     window.bmp?.getMemoryStats?.().then((s) => setMemoryStats(s));
     window.bmp?.getHiggsfieldCredits?.().then((c) => setCredits(c));
     window.bmp?.getVersion?.().then((v) => setAppVersion(v));
-  }, []);
+  }, [authState]);
   const handleProviderChange = (p) => {
     setProvider(p);
     if (p === "higgsfield" && resolution === "4k") setResolution("2k");
-    setImageFireStatus("idle");
-    setImageProgress([]);
   };
   const handleModeChange = (m) => setMode(m);
   const canGenerate = refs.length > 0 && products.length > 0 && description.trim().length > 0;
@@ -7672,22 +7917,24 @@ function App() {
     setGenerateStatus("loading");
     setPrompt("");
     setError("");
-    setImageFireStatus("idle");
-    setImageProgress([]);
+    pushLog("image", "▶ Claude · generating prompt...");
     try {
       const result = await window.bmp.generatePrompt({ refs, products, description });
       setPrompt(result.prompt);
       setMemoryId(result.memoryId);
       setGenerateStatus("done");
+      pushLog("image", "Prompt ready ✓");
       window.bmp?.getMemoryStats?.().then((s) => setMemoryStats(s));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Generation failed");
+      const msg = err instanceof Error ? err.message : "Generation failed";
+      setError(msg);
       setGenerateStatus("error");
+      pushLog("image", `Prompt generation failed — ${msg}`);
     }
   };
-  const markFired = () => {
-    if (!memoryId) return;
-    window.bmp?.markPromptFired?.({ id: memoryId, aspectRatio });
+  const markFired = (id) => {
+    if (!id) return;
+    window.bmp?.markPromptFired?.({ id, aspectRatio });
     window.bmp?.getMemoryStats?.().then((s) => setMemoryStats(s));
   };
   const fireBatch = async (prompts) => {
@@ -7704,42 +7951,53 @@ function App() {
     return settled.filter((s) => s.status === "fulfilled" && s.value.success).length;
   };
   const handleFire = async () => {
-    if (!prompt) return;
-    setImageFireStatus("loading");
-    setImageProgress([]);
+    if (!prompt || !fireGate()) return;
+    const firedMemoryId = memoryId;
+    setImageTasks((n) => n + 1);
+    pushLog("image", `▶ ${provider === "poyo" ? "Nano Banana 2" : "Higgsfield"} ×${variations} · ${aspectRatio} · ${resolution.toUpperCase()}`);
     try {
       const succeeded = await fireBatch(Array.from({ length: variations }, () => prompt));
       const failed = variations - succeeded;
       if (variations > 1) {
-        setImageProgress((prev) => [...prev, failed === 0 ? `All ${variations} variations generated.` : succeeded === 0 ? `All ${variations} variations failed.` : `${succeeded}/${variations} generated — ${failed} failed.`]);
+        pushLog("image", failed === 0 ? `All ${variations} variations generated.` : succeeded === 0 ? `All ${variations} variations failed.` : `${succeeded}/${variations} generated — ${failed} failed.`);
       }
-      setImageFireStatus(succeeded > 0 ? "done" : "error");
-      if (succeeded > 0) markFired();
+      setImageResult(succeeded > 0 ? "done" : "error");
+      if (succeeded > 0) markFired(firedMemoryId);
     } catch (err) {
-      setImageFireStatus("error");
-      setImageProgress((prev) => [...prev, err instanceof Error ? err.message : "Unknown error"]);
+      setImageResult("error");
+      pushLog("image", err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setImageTasks((n) => n - 1);
     }
   };
-  const handleFireAngles = async () => {
-    if (!prompt) return;
-    setImageFireStatus("loading");
-    setImageProgress(["Generating angle variations with Claude..."]);
+  const handleFireModel = async () => {
+    if (!modelPrompt.trim() || !fireGate()) return;
+    const gender = modelGender;
+    setModelTasks((n) => n + 1);
+    pushLog("model", `▶ ${modelEngine === "recraft" ? "Recraft v4.1 Pro" : "Nano Banana 2"} · ${modelAspectRatio}${modelEngine === "nb2" ? ` · ${modelResolution.toUpperCase()}` : " · 4MP"} · ${gender === "male" ? "SMM" : "SMF"}`);
     try {
-      const { variants } = await window.bmp.generateAngleVariations({ prompt });
-      setImageProgress((prev) => [...prev, ...variants.map((v) => `∠ ${v.label}`), `Firing ${variants.length} angles...`]);
-      const succeeded = await fireBatch(variants.map((v) => v.prompt));
-      setImageProgress((prev) => [...prev, succeeded === variants.length ? `All ${variants.length} angles generated.` : succeeded === 0 ? `All ${variants.length} angles failed.` : `${succeeded}/${variants.length} angles generated.`]);
-      setImageFireStatus(succeeded > 0 ? "done" : "error");
-      if (succeeded > 0) markFired();
+      const result = await window.bmp.fireModel({
+        prompt: modelPrompt,
+        engine: modelEngine,
+        aspectRatio: modelAspectRatio,
+        resolution: modelResolution,
+        gender
+      });
+      if (result.success && result.outputPath) {
+        setModelResults((prev) => [{ sku: result.sku, gender, full: result.outputPath, face: result.facePath }, ...prev]);
+      }
+      setModelResult(result.success ? "done" : "error");
     } catch (err) {
-      setImageFireStatus("error");
-      setImageProgress((prev) => [...prev, err instanceof Error ? err.message : "Unknown error"]);
+      setModelResult("error");
+      pushLog("model", err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setModelTasks((n) => n - 1);
     }
   };
   const handleFireVideo = async () => {
-    if (!videoPrompt.trim()) return;
-    setVideoFireStatus("loading");
-    setVideoProgress([]);
+    if (!videoPrompt.trim() || !fireGate()) return;
+    setVideoTasks((n) => n + 1);
+    pushLog("video", `▶ Seedance 2 (${videoModel === "seedance-2" ? "PRO" : "FAST"}) · ${videoAspectRatio} · ${videoResolution} · ${duration}s`);
     try {
       const result = await window.bmp.fireVideo({
         prompt: videoPrompt,
@@ -7749,10 +8007,12 @@ function App() {
         resolution: videoResolution,
         duration
       });
-      setVideoFireStatus(result.success ? "done" : "error");
+      setVideoResult(result.success ? "done" : "error");
     } catch (err) {
-      setVideoFireStatus("error");
-      setVideoProgress((prev) => [...prev, err instanceof Error ? err.message : "Unknown error"]);
+      setVideoResult("error");
+      pushLog("video", err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setVideoTasks((n) => n - 1);
     }
   };
   const reset = () => {
@@ -7765,17 +8025,33 @@ function App() {
       setMemoryId(null);
       setVariations(1);
       setError("");
-      setImageFireStatus("idle");
-      setImageProgress([]);
+      if (imageTasks === 0) {
+        setImageResult("idle");
+        setImageLog([]);
+      }
+    } else if (mode === "model") {
+      setModelPrompt("");
+      setModelResults([]);
+      if (modelTasks === 0) {
+        setModelResult("idle");
+        setModelLog([]);
+      }
     } else {
       setVideoPrompt("");
       setFrames([]);
-      setVideoFireStatus("idle");
-      setVideoProgress([]);
+      if (videoTasks === 0) {
+        setVideoResult("idle");
+        setVideoLog([]);
+      }
     }
   };
-  const footerLabel = mode === "video" ? `seedance-2 · ${videoAspectRatio} · ${videoResolution} · ${duration}s` : `${provider === "higgsfield" ? "higgsfield" : "nano-banana-2"} · ${aspectRatio} · ${resolution.toUpperCase()}`;
-  const fireDisabled = mode === "video" ? !videoPrompt.trim() : !prompt;
+  const footerLabel = mode === "video" ? `seedance-2 · ${videoAspectRatio} · ${videoResolution} · ${duration}s` : mode === "model" ? `${modelEngine === "recraft" ? "recraft-v4.1-pro" : "nano-banana-2"} · ${modelAspectRatio}${modelEngine === "nb2" ? ` · ${modelResolution.toUpperCase()}` : " · 4MP"} · ${modelGender === "male" ? "SMM" : "SMF"} + face macro` : `${provider === "higgsfield" ? "higgsfield" : "nano-banana-2"} · ${aspectRatio} · ${resolution.toUpperCase()}`;
+  const fireDisabled = mode === "video" ? !videoPrompt.trim() : mode === "model" ? !modelPrompt.trim() : !prompt;
+  const showImageLog = imageLog.length > 0 || imageTasks > 0;
+  if (authState === "checking") return null;
+  if (authState === "locked") {
+    return /* @__PURE__ */ jsxRuntimeExports.jsx(LockScreen, { initialLockUntil: lockUntil, onUnlocked: () => setAuthState("unlocked") });
+  }
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col h-screen bg-bg overflow-hidden", children: [
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "titlebar-drag flex items-center justify-between px-5 h-11 flex-shrink-0", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "titlebar-nodrag flex items-center gap-3 translate-y-[1px]", style: { marginLeft: "72px" }, children: [
@@ -7794,8 +8070,8 @@ function App() {
     ] }),
     /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "h-px bg-border flex-shrink-0" }),
     /* @__PURE__ */ jsxRuntimeExports.jsx(UpdateBar, {}),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex-shrink-0 px-4 pt-3 pb-0", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1 bg-white/[0.04] border border-border rounded-lg p-1 w-fit", children: ["image", "video"].map((m) => {
-      const busy = m === "image" ? imageFireStatus === "loading" : videoFireStatus === "loading";
+    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex-shrink-0 px-4 pt-3 pb-0", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1 bg-white/[0.04] border border-border rounded-lg p-1 w-fit", children: ["image", "video", "model"].map((m) => {
+      const busy = m === "image" ? imageTasks > 0 : m === "model" ? modelTasks > 0 : videoTasks > 0;
       return /* @__PURE__ */ jsxRuntimeExports.jsxs(
         "button",
         {
@@ -7805,7 +8081,7 @@ function App() {
                   ${mode === m ? "bg-white/12 text-white" : "text-text-muted hover:text-white/60"}
                 `,
           children: [
-            m === "image" ? "Image" : "Video",
+            m === "image" ? "Image" : m === "video" ? "Video" : "Model",
             busy && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "w-1.5 h-1.5 rounded-full bg-accent animate-pulse flex-shrink-0" })
           ]
         },
@@ -7813,7 +8089,7 @@ function App() {
       );
     }) }) }),
     /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex-1 overflow-y-auto p-4 flex flex-col gap-4 min-h-0", children: mode === "image" ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "grid grid-cols-2 gap-3", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "grid grid-cols-2 gap-3 flex-shrink-0", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "bg-surface border border-border rounded-lg p-3 flex flex-col gap-2", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "text-[11.7px] font-heading font-semibold uppercase tracking-widest text-text-secondary", children: [
             "References ",
@@ -7829,7 +8105,7 @@ function App() {
           /* @__PURE__ */ jsxRuntimeExports.jsx(DropZone, { label: "+ Add product", multiple: true, files: products, onFiles: setProducts })
         ] })
       ] }),
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "bg-surface border border-border rounded-lg p-3 flex flex-col gap-2", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "bg-surface border border-border rounded-lg p-3 flex flex-col gap-2 flex-shrink-0", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("label", { className: "text-[11.7px] font-heading font-semibold uppercase tracking-widest text-text-secondary", children: "Brief Description" }),
         /* @__PURE__ */ jsxRuntimeExports.jsx(
           "textarea",
@@ -7842,7 +8118,7 @@ function App() {
           }
         )
       ] }),
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex gap-2", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex gap-2 flex-shrink-0", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx(
           "button",
           {
@@ -7860,26 +8136,55 @@ function App() {
           /* @__PURE__ */ jsxRuntimeExports.jsx("path", { d: "M7 4v3.5l2 1.5", stroke: "currentColor", strokeWidth: "1.25", strokeLinecap: "round", strokeLinejoin: "round" })
         ] }) })
       ] }),
-      error && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "bg-red-500/5 border border-red-500/20 rounded-lg px-4 py-3", children: /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-[13.7px] text-red-400 font-mono", children: error }) }),
-      prompt && /* @__PURE__ */ jsxRuntimeExports.jsx(PromptOutput, { prompt }),
-      imageProgress.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "bg-[#0f0f0f] border border-border rounded-lg px-3 py-2 max-h-[80px] overflow-y-auto flex-shrink-0", children: imageProgress.map((line, i) => /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-[11.7px] font-mono text-text-secondary leading-relaxed", children: line }, i)) }),
-      !prompt && generateStatus === "idle" && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex-1 flex items-center justify-center py-6", children: /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-[11.7px] text-text-muted uppercase tracking-[0.2em] font-heading", children: "Drop refs + product · Write brief · Generate" }) })
-    ] }) : /* @__PURE__ */ jsxRuntimeExports.jsx(
+      error && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "bg-red-500/5 border border-red-500/20 rounded-lg px-4 py-3 flex-shrink-0", children: /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-[13.7px] text-red-400 font-mono", children: error }) }),
+      prompt && /* @__PURE__ */ jsxRuntimeExports.jsx(PromptOutput, { prompt, className: showImageLog ? "flex-[3] min-h-[140px]" : "flex-1 min-h-[140px]" }),
+      showImageLog && /* @__PURE__ */ jsxRuntimeExports.jsx(
+        ActivityLog,
+        {
+          entries: imageLog,
+          running: imageTasks,
+          onClear: () => {
+            setImageLog([]);
+            setImageResult("idle");
+          },
+          className: prompt ? "flex-[2] min-h-[110px]" : "flex-1 min-h-[110px]"
+        }
+      ),
+      !prompt && !showImageLog && generateStatus === "idle" && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex-1 flex items-center justify-center py-6", children: /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-[11.7px] text-text-muted uppercase tracking-[0.2em] font-heading", children: "Drop refs + product · Write brief · Generate" }) })
+    ] }) : mode === "model" ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+      ModelMode,
+      {
+        prompt: modelPrompt,
+        onPrompt: handleModelPrompt,
+        results: modelResults,
+        entries: modelLog,
+        running: modelTasks,
+        onClearLog: () => {
+          setModelLog([]);
+          setModelResult("idle");
+        }
+      }
+    ) : /* @__PURE__ */ jsxRuntimeExports.jsx(
       VideoMode,
       {
         prompt: videoPrompt,
         onPrompt: setVideoPrompt,
         frames,
         onFrames: setFrames,
-        progress: videoProgress
+        entries: videoLog,
+        running: videoTasks,
+        onClearLog: () => {
+          setVideoLog([]);
+          setVideoResult("idle");
+        }
       }
     ) }),
     /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex-shrink-0 border-t border-border px-4 py-3", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
       HiggsfieldButton,
       {
-        status: mode === "video" ? videoFireStatus : imageFireStatus,
-        onClick: mode === "video" ? handleFireVideo : handleFire,
-        onAngles: handleFireAngles,
+        status: mode === "video" ? videoFireStatus : mode === "model" ? modelFireStatus : imageFireStatus,
+        running: mode === "video" ? videoTasks : mode === "model" ? modelTasks : imageTasks,
+        onClick: mode === "video" ? handleFireVideo : mode === "model" ? handleFireModel : handleFire,
         disabled: fireDisabled,
         mode,
         provider,
@@ -7897,7 +8202,15 @@ function App() {
         videoResolution,
         onVideoResolution: setVideoResolution,
         duration,
-        onDuration: setDuration
+        onDuration: setDuration,
+        modelEngine,
+        onModelEngine: setModelEngine,
+        modelAspectRatio,
+        onModelAspectRatio: setModelAspectRatio,
+        modelResolution,
+        onModelResolution: setModelResolution,
+        modelGender,
+        onModelGender: setModelGender
       }
     ) }),
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex-shrink-0 border-t border-border px-5 py-2 flex items-center justify-between", children: [

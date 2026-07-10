@@ -4,7 +4,7 @@ Electron app para generar prompts de marketing de prendas Brotherhood y disparar
 
 **Dev:** `npm run dev`
 **Release:** `bash scripts/publish.sh` (build local + subida via gh — ver sección Release)
-**Versión actual:** `1.6.0` (2026-07-07: lock screen + fix de seguridad en localfile:// — ver sección abajo)
+**Versión actual:** `1.7.0` (2026-07-10: modo Model con macro face + SKU, tareas ref-count sin pausas, ActivityLog; Angles ×4 removido)
 
 ## Lock screen + seguridad (v1.6.0, 2026-07-07)
 - Primer arranque en una máquina pide passphrase (`brother*1998_hood`, mismo patrón que Brotherhood Canvas/Sorter/Product Builder) antes de tocar filesystem/API keys — scrypt hash+salt propios en `main.ts`, nunca el texto plano; `timingSafeEqual`; backoff exponencial persistido en `bmp-prefs.json`
@@ -31,7 +31,19 @@ Ratios unificados para ambos providers: **9:16 / 4:5 / 1:1 / 16:9** (default 4:5
 | HF (Higgsfield) | nano_banana_2 CLI | 1k / 2k | ×1–4 |
 | NB2 (POYO, default) | nano-banana-2(-edit) | 1K / 2K / 4K | ×1–4 |
 
-**POYO límite duro: max 14 imágenes de referencia por request** (`POYO_MAX_REFS`). La app las recorta a 14 con warning en vez de fallar. Para disparos paralelos (variaciones/angles) las refs se suben UNA vez via `upload-poyo-refs` y las URLs se comparten (`imageUrls` en `fire-poyo-image`) — re-subir por tarea reventaba rate limits de POYO.
+**POYO límite duro: max 14 imágenes de referencia por request** (`POYO_MAX_REFS`). La app las recorta a 14 con warning en vez de fallar. Para disparos paralelos (variaciones) las refs se suben UNA vez via `upload-poyo-refs` y las URLs se comparten (`imageUrls` en `fire-poyo-image`) — re-subir por tarea reventaba rate limits de POYO.
+
+### Model (`[NB2 | RECRAFT]`) — creación de modelos de IA (2026-07-10)
+- El usuario PEGA el prompt manualmente (Claude no lo genera); sin imágenes de referencia
+- Engines: NB2 (POYO nano-banana-2 text→image, 1K/2K/4K) o **Recraft v4.1 Pro** (`recraftv4_1_pro`, siempre 4MP)
+- **Pipeline completo en IPC `fire-model`** (main.ts): asigna SKU → genera full body → dispara automáticamente un **macro face shot** con `nano-banana-2-edit` usando el render recién generado como referencia de identidad (misma cara) y el preset `MACRO_FACE_PROMPT` (gender-neutral, 4:5 · 2K)
+- **SKU + carpetas**: `SMF###` (female) / `SMM###` (male) en `/Volumes/Sandisk Home/Brotherhood/IA/Modelos/SMF|SMM/<SKU>/` con `<SKU>.<ext>` + `<SKU>_FACE.<ext>`; numeración auto-incremental escaneando la carpeta + `reservedSkus` (Set) contra carreras de fires paralelos; si la generación principal falla se hace `rmdirSync` del folder vacío
+- Toggle `SMF | SMM` en la barra inferior con auto-detección de género desde el prompt (`detectGender` en App.tsx — "woman" nunca matchea `\bman\b`); el toggle siempre puede overridear
+- Recraft API: `POST https://external.api.recraft.ai/v1/images/generations` (OpenAI-style, Bearer `RECRAFT_API_KEY`), respuesta `{ data: [{ url }] }`; tamaños pro en `RECRAFT_SIZES` (9:16→1536x2688, 4:5→1792x2304, 1:1→2048x2048, 16:9→2688x1536)
+- **NO enviar `style`** — v4.1 Pro lo rechaza (`invalid_image_type`); el default ya es fotorealista
+- La URL del resultado no trae extensión y sirve **WebP** — se descarga a `.download` y se renombra según magic bytes; para subir un WebP como ref a POYO se convierte antes a JPEG con `sips` (`uploadRefToPOYO` — nativeImage no decodifica WebP)
+- Resultados: cards por SKU en `ModelMode.tsx` con FULL + FACE lado a lado y lightbox — main agrega outputs a `knownLocalPaths` para servirlos via `localfile://`
+- Si el face macro falla, el resultado principal se conserva (success parcial con `error` y placeholder "face macro failed" en la card)
 
 ### Video (Seedance 2 / POYO)
 - El usuario escribe el prompt manualmente
@@ -43,6 +55,7 @@ Ratios unificados para ambos providers: **9:16 / 4:5 / 1:1 / 16:9** (default 4:5
 ## Claves de entorno (`~/.bmp.env`)
 ```
 POYO_API_KEY=...
+RECRAFT_API_KEY=...
 ```
 (GEMINI_API_KEY ya no se usa — provider Gemini removido)
 
@@ -68,20 +81,18 @@ output: { format: 'cjs', entryFileNames: '[name].cjs' }
 preload: join(__dirname, '../preload/preload.cjs')
 ```
 
-## Tareas en background por modo
-- `fireStatus`/`fireProgress` están **scoped por modo** (`imageFireStatus`/`videoFireStatus`, `imageProgress`/`videoProgress`) — cambiar de pestaña NO cancela ni oculta la tarea en curso
-- El canal `higgsfield-progress` emite `{ scope: 'image' | 'video', line }` (ya no un string plano) y el renderer enruta cada línea a su log
+## Tareas en background por modo (rediseño 2026-07-10)
+- **Ref-count por modo** (`imageTasks`/`videoTasks`/`modelTasks`) + último resultado (`imageResult`...); el status del botón es derivado. NADA resetea una tarea en curso: generar prompt, cambiar provider/tab o Reset no tocan tareas activas
+- Disparos en paralelo: el fire button queda clickable durante tareas (`GENERATING ×N · + fire again`), los pills nunca se deshabilitan (cada fire snapshotea sus valores), debounce 600ms (`fireGate`)
+- El canal `higgsfield-progress` emite `{ scope: 'image' | 'video' | 'model', line }` y el renderer enruta cada línea a su log
+- `ActivityLog.tsx` compartido: timestamps, colores por línea (✓ verde / error rojo / parcial naranja / ▶∠ accent), auto-scroll stick-to-bottom, Clear, cap 400 líneas; llena el espacio restante (flex-basis 0) junto a PromptOutput — sin espacio muerto
 - La pestaña con tarea activa muestra un punto accent pulsante
-
-## Angles ×4
-- Botón `ANGLES ×4` en la barra inferior (modo image, requiere prompt generado)
-- Handler `generate-angle-variations`: Claude reescribe solo [COMPOSITION]/[CAMERA] (y [LIGHTING] si el ángulo lo exige) → JSON estricto de 4 `{label, prompt}` → se disparan en paralelo con el provider activo
 
 ## IPC handlers (main.ts)
 - `generate-prompt` — Claude Sonnet 5 visión → prompt
-- `generate-angle-variations` — Claude Sonnet 5 → 4 variaciones de ángulo del prompt
 - `fire-higgsfield` — Higgsfield CLI (solo HF; Gemini removido)
 - `fire-poyo-image` — POYO Nano Banana 2 (acepta `imageUrls` pre-subidas)
+- `fire-model` — pipeline Model completo (SKU + full body + macro face; NB2 o Recraft)
 - `upload-poyo-refs` — sube refs una vez, retorna URLs para fan-out paralelo
 - `fire-video` — POYO Seedance 2
 - `check-higgsfield-auth` — verifica POYO_API_KEY presente

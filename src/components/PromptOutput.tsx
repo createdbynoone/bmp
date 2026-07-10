@@ -2,9 +2,10 @@ import React, { useState } from 'react'
 
 interface PromptOutputProps {
   prompt: string
+  className?: string
 }
 
-export function PromptOutput({ prompt }: PromptOutputProps) {
+export function PromptOutput({ prompt, className = '' }: PromptOutputProps) {
   const [copied, setCopied] = useState(false)
 
   const copy = async () => {
@@ -14,8 +15,8 @@ export function PromptOutput({ prompt }: PromptOutputProps) {
   }
 
   return (
-    <div className="relative bg-surface border border-border rounded-lg overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-2 border-b border-border">
+    <div className={`relative bg-surface border border-border rounded-lg overflow-hidden flex flex-col min-h-0 ${className}`}>
+      <div className="flex items-center justify-between px-4 py-2 border-b border-border flex-shrink-0">
         <span className="text-[11.7px] font-medium uppercase tracking-widest text-text-secondary font-heading">
           Generated Prompt
         </span>
@@ -48,7 +49,7 @@ export function PromptOutput({ prompt }: PromptOutputProps) {
           )}
         </button>
       </div>
-      <pre className="prompt-output p-4 text-[13.7px] font-mono text-text-primary leading-relaxed whitespace-pre-wrap overflow-auto max-h-[200px]">
+      <pre className="prompt-output p-4 text-[13.7px] font-mono text-text-primary leading-relaxed whitespace-pre-wrap overflow-auto flex-1 min-h-0">
         {prompt}
       </pre>
     </div>

@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, shell, nativeImage, protocol, net, Menu, dialog } from 'electron'
 import { join } from 'path'
-import { readFileSync, writeFileSync, createWriteStream } from 'fs'
+import { readFileSync, writeFileSync, createWriteStream, renameSync, mkdirSync, readdirSync, unlinkSync, rmdirSync } from 'fs'
 import { homedir } from 'os'
 import { execFile, exec } from 'child_process'
 import { promisify } from 'util'
@@ -134,7 +134,7 @@ function applyDockIcon(styleName: string) {
   if (process.platform !== 'darwin') return
   try {
     const icon = nativeImage.createFromPath(getIconPath(styleName))
-    if (!icon.isEmpty()) app.dock.setIcon(icon)
+    if (!icon.isEmpty()) app.dock?.setIcon(icon)
   } catch {}
 }
 
@@ -435,47 +435,6 @@ handleWhenUnlocked('generate-prompt', async (_event, { refs, products, descripti
   return { prompt, memoryId: entry.id }
 })
 
-const ANGLE_SYSTEM_PROMPT = `You are a fashion photography camera director. You receive one NanaBanana2 (Higgsfield) editorial prompt for Brotherhood streetwear following the [SCENE]/[GARMENT]/[PLACEMENT/INTERACTION]/[COMPOSITION]/[LIGHTING]/[CAMERA]/[MOOD] structure.
-
-Produce exactly 4 variations of the SAME shot changing ONLY the camera work: rewrite [COMPOSITION] and [CAMERA] (lens choice may change), and adjust [LIGHTING] direction wording only where the new angle physically requires it. Everything else — scene, garment description, placement, mood, safety wording — must remain identical word-for-word.
-
-Choose the 4 angle treatments most editorially useful FOR THIS SPECIFIC SHOT, drawing from: tighter close-up / macro detail crop on the garment graphic, 3/4 orbit rotation left or right, low-angle hero shot, high-angle or top-down, profile view, wide establishing pull-back, over-the-shoulder, subtle dutch tilt. The 4 must be clearly distinct from each other and from the original framing.
-
-Output STRICT JSON only — no markdown fences, no commentary:
-[{"label":"<2-4 word angle name>","prompt":"<full modified prompt>"},{...},{...},{...}]`
-
-handleWhenUnlocked('generate-angle-variations', async (_event, { prompt }: { prompt: string }) => {
-  if (typeof prompt !== 'string' || prompt.trim().length === 0 || prompt.length > 12000) {
-    throw new Error('Invalid prompt')
-  }
-
-  const message = await anthropic.messages.create({
-    model: CLAUDE_MODEL,
-    max_tokens: 4096,
-    system: ANGLE_SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: `Base prompt:\n\n${prompt}\n\nGenerate the 4 angle variations now.` }],
-  })
-
-  const block = message.content[0]
-  if (block.type !== 'text') throw new Error('Unexpected response type')
-
-  // Strip accidental markdown fences before parsing
-  const raw = block.text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
-  let variants: Array<{ label: string; prompt: string }>
-  try {
-    variants = JSON.parse(raw)
-  } catch {
-    throw new Error('Claude returned invalid JSON for angle variations')
-  }
-  if (!Array.isArray(variants) || variants.length === 0) throw new Error('No angle variations returned')
-  variants = variants
-    .filter((v) => v && typeof v.label === 'string' && typeof v.prompt === 'string' && v.prompt.trim().length > 0)
-    .slice(0, 4)
-  if (variants.length === 0) throw new Error('No valid angle variations returned')
-
-  return { variants }
-})
-
 handleWhenUnlocked('mark-prompt-fired', (_event, { id, aspectRatio }: { id: string; aspectRatio: string }) => {
   markFired(id, aspectRatio)
 })
@@ -725,7 +684,7 @@ const NB2_RATIOS = ['9:16', '4:5', '1:1', '16:9'] as const
 const POYO_MAX_REFS = 14 // POYO nano-banana-2(-edit) hard limit: 14 reference images per request
 
 // Upload product refs once and return their POYO URLs — used to fan out multiple
-// generations (variations / angles) without re-uploading the same images per task
+// generations (variations) without re-uploading the same images per task
 handleWhenUnlocked('upload-poyo-refs', async (event, { products }: { products: string[] }) => {
   if (!Array.isArray(products)) throw new Error('Invalid products')
 
@@ -804,6 +763,7 @@ handleWhenUnlocked('fire-poyo-image', async (event, { prompt, products, aspectRa
     const outputPath = join(desktopPath, outputName)
     sendProgress('Downloading image...')
     await downloadFile(imgFile.file_url, outputPath)
+    knownLocalPaths.add(outputPath) // allow the renderer to preview the result
     try {
       const { stdout } = await execFileAsync('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', outputPath])
       const w = stdout.match(/pixelWidth:\s*(\d+)/)?.[1]; const h = stdout.match(/pixelHeight:\s*(\d+)/)?.[1]
@@ -814,6 +774,216 @@ handleWhenUnlocked('fire-poyo-image', async (event, { prompt, products, aspectRa
     const msg = err instanceof Error ? err.message : String(err)
     sendProgress(`Error: ${msg}`)
     return { success: false, outputPath: '', error: msg }
+  }
+})
+
+// ── Model tab — AI model creation: SKU folders + auto macro face shot ──────────
+
+const MODELS_DIR = '/Volumes/Sandisk Home/Brotherhood/IA/Modelos'
+
+// Recraft v4.1 Pro (4MP) supported sizes, mapped from the app's aspect ratios
+const RECRAFT_SIZES: Record<string, string> = {
+  '9:16': '1536x2688',
+  '4:5': '1792x2304',
+  '1:1': '2048x2048',
+  '16:9': '2688x1536',
+}
+
+// Preset macro prompt for the automatic face shot — gender-neutral, anchored to
+// the reference image so nano-banana-2-edit preserves the generated identity
+const MACRO_FACE_PROMPT = `Macro beauty close-up of the EXACT same person from the reference image — preserve identical facial features, bone structure, skin tone, eye color, eyebrows, hairstyle and any visible styling exactly as shown. Tight portrait framing from forehead to chin filling the frame, face centered, eyes locked direct to lens in razor-sharp focus. Ultra-detailed natural skin texture: visible pores, fine vellus hair, natural micro-imperfections and subtle sheen — no airbrushing. Individual eyelashes and brow hairs resolved, natural lip texture. Soft wraparound beauty-dish light with clean catchlights in both eyes, gentle falloff, seamless neutral studio backdrop dissolving out of focus. Shot on Sony A7R IV, 90mm macro lens at f/4, shallow depth of field. Ultra-realistic commercial beauty campaign photography.`
+
+// SKUs held by in-flight generations — a folder scan alone would let two
+// parallel fires allocate the same number
+const reservedSkus = new Set<string>()
+
+function allocateSku(gender: 'female' | 'male'): { sku: string; dir: string } {
+  const prefix = gender === 'male' ? 'SMM' : 'SMF'
+  const genderDir = join(MODELS_DIR, prefix)
+  mkdirSync(genderDir, { recursive: true })
+  const rx = new RegExp(`^${prefix}(\\d{3,})$`)
+  const used = readdirSync(genderDir)
+    .map((n) => n.match(rx)?.[1])
+    .filter((n): n is string => n !== undefined)
+    .map(Number)
+  for (const s of reservedSkus) {
+    const m = s.match(rx)
+    if (m) used.push(Number(m[1]))
+  }
+  const sku = `${prefix}${String((used.length > 0 ? Math.max(...used) : 0) + 1).padStart(3, '0')}`
+  reservedSkus.add(sku)
+  const dir = join(genderDir, sku)
+  mkdirSync(dir, { recursive: true })
+  return { sku, dir }
+}
+
+function sniffImageExt(path: string): string {
+  const head = readFileSync(path).subarray(0, 4)
+  return head.toString('latin1') === 'RIFF' ? 'webp'
+    : head[0] === 0x89 && head[1] === 0x50 ? 'png'
+    : head[0] === 0xff && head[1] === 0xd8 ? 'jpg'
+    : 'png'
+}
+
+async function sendSavedLine(outputPath: string, sendProgress: (l: string) => void) {
+  const name = outputPath.split('/').pop() ?? outputPath
+  try {
+    const { stdout } = await execFileAsync('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', outputPath])
+    const w = stdout.match(/pixelWidth:\s*(\d+)/)?.[1]; const h = stdout.match(/pixelHeight:\s*(\d+)/)?.[1]
+    sendProgress(`Saved: ${name}${w && h ? ` · ${w}×${h}px` : ''}`)
+  } catch { sendProgress(`Saved: ${name}`) }
+}
+
+// Generate with Recraft v4.1 Pro and save as destDir/baseName.<ext>. Throws on failure.
+async function recraftGenerateToFile(prompt: string, aspectRatio: string, destDir: string, baseName: string, sendProgress: (l: string) => void): Promise<string> {
+  const apiKey = process.env.RECRAFT_API_KEY
+  if (!apiKey) throw new Error('RECRAFT_API_KEY not set — add it to ~/.bmp.env')
+  const size = RECRAFT_SIZES[aspectRatio] ?? RECRAFT_SIZES['4:5']
+
+  sendProgress(`Submitting Recraft v4.1 Pro (${aspectRatio} · ${size})...`)
+  const res = await fetch('https://external.api.recraft.ai/v1/images/generations', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    // No `style` param — Recraft v4.1 Pro rejects it ("doesn't support style
+    // 'realistic_image'"); the model's default is already photorealistic
+    body: JSON.stringify({ prompt, model: 'recraftv4_1_pro', n: 1, size, response_format: 'url' }),
+  })
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`
+    try {
+      const errBody = await res.json() as { message?: string; error?: { message?: string } }
+      msg = errBody.error?.message ?? errBody.message ?? msg
+    } catch {}
+    throw new Error(msg)
+  }
+  const data = await res.json() as { data?: Array<{ url?: string }> }
+  const imageUrl = data.data?.[0]?.url
+  if (!imageUrl) throw new Error('No image URL in Recraft response')
+
+  sendProgress('Downloading image...')
+  // Recraft URLs carry no file extension — download first, then sniff the
+  // magic bytes for the real format (v4.1 Pro currently serves WebP)
+  const tmpPath = join(destDir, `${baseName}.download`)
+  await downloadFile(imageUrl, tmpPath)
+  const outputPath = join(destDir, `${baseName}.${sniffImageExt(tmpPath)}`)
+  renameSync(tmpPath, outputPath)
+  knownLocalPaths.add(outputPath) // allow the renderer to preview the result
+  await sendSavedLine(outputPath, sendProgress)
+  return outputPath
+}
+
+// Submit a POYO generation, poll it, and save the image as destDir/baseName.<ext>. Throws on failure.
+async function poyoGenerateToFile(opts: {
+  model: string; input: Record<string, unknown>; apiKey: string
+  destDir: string; baseName: string; sendProgress: (l: string) => void
+}): Promise<string> {
+  const { model, input, apiKey, destDir, baseName, sendProgress } = opts
+  const submitRes = await fetch('https://api.poyo.ai/api/generate/submit', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, input }),
+  })
+  const submitData = await submitRes.json() as { data?: { task_id: string }; error?: { message: string } }
+  if (!submitRes.ok || !submitData.data?.task_id) {
+    throw new Error(submitData.error?.message ?? `HTTP ${submitRes.status}`)
+  }
+  sendProgress(`Generating... (${submitData.data.task_id})`)
+
+  const files = await pollPOYOTask(submitData.data.task_id, apiKey, sendProgress)
+  const imgFile = files.find((f) => f.file_type === 'image' || f.file_url.match(/\.(jpg|jpeg|png|webp)/i))
+  if (!imgFile) throw new Error('No image file in response')
+  const urlExt = imgFile.file_url.split('.').pop()?.split('?')[0]?.toLowerCase()
+  const ext = urlExt && urlExt.length <= 4 ? urlExt : 'jpg'
+  const outputPath = join(destDir, `${baseName}.${ext}`)
+  sendProgress('Downloading image...')
+  await downloadFile(imgFile.file_url, outputPath)
+  knownLocalPaths.add(outputPath)
+  await sendSavedLine(outputPath, sendProgress)
+  return outputPath
+}
+
+// nativeImage can't decode WebP for the POYO reference upload — convert via sips first
+async function uploadRefToPOYO(path: string, apiKey: string): Promise<string> {
+  if (!path.toLowerCase().endsWith('.webp')) return uploadFrameToPOYO(path, apiKey, 0)
+  const tmp = path.replace(/\.webp$/i, '_ref.jpg')
+  await execFileAsync('sips', ['-s', 'format', 'jpeg', '-s', 'formatOptions', '90', path, '--out', tmp])
+  try {
+    return await uploadFrameToPOYO(tmp, apiKey, 0)
+  } finally {
+    try { unlinkSync(tmp) } catch {}
+  }
+}
+
+handleWhenUnlocked('fire-model', async (event, { prompt, engine, aspectRatio, resolution, gender }: {
+  prompt: string; engine: string; aspectRatio: string; resolution: string; gender: string
+}) => {
+  if (typeof prompt !== 'string' || prompt.trim().length === 0 || prompt.length > 10000) throw new Error('Invalid prompt')
+
+  const sendProgress = (line: string) => event.sender.send('higgsfield-progress', { scope: 'model', line })
+  const safeGender = gender === 'male' ? 'male' as const : 'female' as const
+  const safeEngine = engine === 'recraft' ? 'recraft' : 'nb2'
+  const safeSize = NB2_RATIOS.includes(aspectRatio as typeof NB2_RATIOS[number]) ? aspectRatio : '4:5'
+  const safeRes = ['1k', '2k', '4k'].includes(resolution) ? resolution.toUpperCase() : '2K'
+  const poyoKey = process.env.POYO_API_KEY
+
+  // 1 — allocate the next SKU folder (SMF### female / SMM### male)
+  let sku: string; let dir: string
+  try {
+    ({ sku, dir } = allocateSku(safeGender))
+  } catch (err) {
+    const msg = `Cannot access ${MODELS_DIR} — ${err instanceof Error ? err.message : String(err)}`
+    sendProgress(msg)
+    return { success: false, sku: '', outputPath: '', facePath: '', error: msg }
+  }
+  sendProgress(`SKU ${sku} · Modelos/${safeGender === 'male' ? 'SMM' : 'SMF'}/${sku}/`)
+
+  try {
+    // 2 — primary model generation
+    let fullPath: string
+    try {
+      if (safeEngine === 'recraft') {
+        fullPath = await recraftGenerateToFile(prompt, safeSize, dir, sku, sendProgress)
+      } else {
+        if (!poyoKey) throw new Error('POYO_API_KEY not set — add it to ~/.bmp.env')
+        sendProgress(`Submitting Nano Banana 2 (${safeSize} · ${safeRes})...`)
+        fullPath = await poyoGenerateToFile({
+          model: 'nano-banana-2', input: { prompt, size: safeSize, resolution: safeRes },
+          apiKey: poyoKey, destDir: dir, baseName: sku, sendProgress,
+        })
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      sendProgress(`Error: ${msg}`)
+      try { rmdirSync(dir) } catch {} // drop the folder only if nothing was saved
+      return { success: false, sku, outputPath: '', facePath: '', error: msg }
+    }
+
+    // 3 — automatic macro face shot: nano-banana-2-edit with the fresh render
+    // as identity reference, so the close-up is the SAME person
+    let facePath = ''
+    let faceError: string | undefined
+    if (!poyoKey) {
+      faceError = 'POYO_API_KEY not set — face macro skipped'
+      sendProgress(faceError)
+    } else {
+      try {
+        sendProgress('▶ Macro face shot — uploading reference...')
+        const refUrl = await uploadRefToPOYO(fullPath, poyoKey)
+        facePath = await poyoGenerateToFile({
+          model: 'nano-banana-2-edit',
+          input: { prompt: MACRO_FACE_PROMPT, size: '4:5', resolution: '2K', image_urls: [refUrl] },
+          apiKey: poyoKey, destDir: dir, baseName: `${sku}_FACE`, sendProgress,
+        })
+      } catch (err) {
+        faceError = err instanceof Error ? err.message : String(err)
+        sendProgress(`Face macro failed — ${faceError}`)
+      }
+    }
+
+    if (facePath) sendProgress(`${sku} complete ✓ — full body + face macro`)
+    return { success: true, sku, outputPath: fullPath, facePath, error: faceError }
+  } finally {
+    reservedSkus.delete(sku)
   }
 })
 
