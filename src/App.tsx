@@ -40,7 +40,7 @@ export default function App() {
   const [generateStatus, setGenerateStatus] = useState<GenerateStatus>('idle')
   const [error, setError] = useState('')
   const [memoryId, setMemoryId] = useState<string | null>(null)
-  const [provider, setProvider] = useState<Provider>('poyo')
+  const [provider, setProvider] = useState<Provider>('nanobanana')
   const [aspectRatio, setAspectRatio] = useState('4:5')
   const [resolution, setResolution] = useState('2k')
   const [variations, setVariations] = useState(1)
@@ -140,9 +140,9 @@ export default function App() {
 
   const handleProviderChange = (p: Provider) => {
     setProvider(p)
-    // Both providers accept all IMAGE_RATIOS — only HF lacks 4k.
+    // Seedream 5.0 Pro tops out at 2K — only Nano Banana Pro goes to 4K.
     // Running tasks captured their provider at fire time; never reset them here.
-    if (p === 'higgsfield' && resolution === '4k') setResolution('2k')
+    if (p === 'seedream' && resolution === '4k') setResolution('2k')
   }
 
   // Switching tabs only changes the view — running tasks keep going in background
@@ -176,20 +176,19 @@ export default function App() {
     window.bmp?.getMemoryStats?.().then((s: { total: number; fired: number }) => setMemoryStats(s))
   }
 
-  // Fire N prompts in parallel with the active provider. For POYO, product refs
-  // are uploaded ONCE and their URLs shared across tasks — re-uploading the same
-  // images per parallel task bursts POYO's rate limits (max 14 refs per request)
+  // Fire N prompts in parallel with the active provider (both go through POYO).
+  // Product refs are uploaded ONCE and their URLs shared across tasks —
+  // re-uploading the same images per parallel task bursts POYO's rate limits
+  // (max 14 refs per request)
   const fireBatch = async (prompts: string[]): Promise<number> => {
     let poyoUrls: string[] | undefined
-    if (provider === 'poyo' && products.length > 0 && prompts.length > 1) {
+    if (products.length > 0 && prompts.length > 1) {
       const { urls } = await window.bmp.uploadPoyoRefs({ products })
       poyoUrls = urls
     }
     const settled = await Promise.allSettled(
       prompts.map((p) =>
-        provider === 'poyo'
-          ? window.bmp.firePoyoImage({ prompt: p, products, aspectRatio, resolution, imageUrls: poyoUrls })
-          : window.bmp.fireHighsfield({ prompt: p, aspectRatio, products, resolution })
+        window.bmp.firePoyoImage({ prompt: p, products, aspectRatio, resolution, provider, imageUrls: poyoUrls })
       )
     )
     return settled.filter((s) => s.status === 'fulfilled' && s.value.success).length
@@ -199,7 +198,7 @@ export default function App() {
     if (!prompt || !fireGate()) return
     const firedMemoryId = memoryId
     setImageTasks((n) => n + 1)
-    pushLog('image', `▶ ${provider === 'poyo' ? 'Nano Banana 2' : 'Higgsfield'} ×${variations} · ${aspectRatio} · ${resolution.toUpperCase()}`)
+    pushLog('image', `▶ ${provider === 'seedream' ? 'Seedream 5.0' : 'Nano Banana Pro'} ×${variations} · ${aspectRatio} · ${resolution.toUpperCase()}`)
     try {
       const succeeded = await fireBatch(Array.from({ length: variations }, () => prompt))
       const failed = variations - succeeded
@@ -280,7 +279,7 @@ export default function App() {
     ? `seedance-2 · ${videoAspectRatio} · ${videoResolution} · ${duration}s`
     : mode === 'model'
       ? `${modelEngine === 'recraft' ? 'recraft-v4.1-pro' : 'nano-banana-2'} · ${modelAspectRatio}${modelEngine === 'nb2' ? ` · ${modelResolution.toUpperCase()}` : ' · 4MP'} · ${modelGender === 'male' ? 'SMM' : 'SMF'} + face macro`
-      : `${provider === 'higgsfield' ? 'higgsfield' : 'nano-banana-2'} · ${aspectRatio} · ${resolution.toUpperCase()}`
+      : `${provider === 'seedream' ? 'seedream-5.0-pro' : 'nano-banana-pro'} · ${aspectRatio} · ${resolution.toUpperCase()}`
 
   const fireDisabled = mode === 'video' ? !videoPrompt.trim() : mode === 'model' ? !modelPrompt.trim() : !prompt
 

@@ -6,9 +6,8 @@ interface Window {
     }
     getPathForFile: (file: File) => string
     generatePrompt: (data: { refs: string[]; products: string[]; description: string }) => Promise<{ prompt: string; memoryId: string }>
-    fireHighsfield: (data: { prompt: string; aspectRatio: string; products: string[]; resolution: string }) => Promise<{ success: boolean; outputPath: string }>
     fireVideo: (data: { prompt: string; products: string[]; videoModel: string; aspectRatio: string; resolution: string; duration: number }) => Promise<{ success: boolean; outputPath: string }>
-    firePoyoImage: (data: { prompt: string; products: string[]; aspectRatio: string; resolution: string; imageUrls?: string[] }) => Promise<{ success: boolean; outputPath: string }>
+    firePoyoImage: (data: { prompt: string; products: string[]; aspectRatio: string; resolution: string; provider: 'seedream' | 'nanobanana'; imageUrls?: string[] }) => Promise<{ success: boolean; outputPath: string }>
     fireModel: (data: { prompt: string; engine: 'nb2' | 'recraft'; aspectRatio: string; resolution: string; gender: 'female' | 'male' }) => Promise<{ success: boolean; sku: string; outputPath: string; facePath: string; error?: string }>
     uploadPoyoRefs: (data: { products: string[] }) => Promise<{ urls: string[] }>
     getHiggsfieldCredits: () => Promise<{ credits: number | null; plan: string | null }>

@@ -1,13 +1,19 @@
 import React from 'react'
 
 type Status = 'idle' | 'loading' | 'done' | 'error'
-export type Provider = 'higgsfield' | 'poyo'
+export type Provider = 'seedream' | 'nanobanana'
 export type Mode = 'image' | 'video' | 'model'
 export type ModelEngine = 'nb2' | 'recraft'
 export type ModelGender = 'female' | 'male'
 
-const IMAGE_RATIOS = ['9:16', '4:5', '1:1', '16:9'] as const
-const HF_RESOLUTIONS = ['1k', '2k'] as const
+// Image tab (Seedream / Nano Banana Pro) — only 4:5 and 9:16
+const IMAGE_RATIOS = ['4:5', '9:16'] as const
+// Seedream 5.0 Pro on POYO tops out at 2K; Nano Banana Pro goes native 4K
+const SEEDREAM_RESOLUTIONS = ['1k', '2k'] as const
+const NANOBANANA_RESOLUTIONS = ['1k', '2k', '4k'] as const
+
+// Model tab (NB2 / Recraft) — unaffected by the Image tab restrictions above
+const MODEL_RATIOS = ['9:16', '4:5', '1:1', '16:9'] as const
 const IMAGE_RESOLUTIONS = ['1k', '2k', '4k'] as const
 
 const VIDEO_RATIOS = ['9:16', '16:9', 'auto'] as const
@@ -55,14 +61,26 @@ interface HiggsfieldButtonProps {
   onModelGender: (g: ModelGender) => void
 }
 
-function HiggsfieldLogo() {
+function SeedreamLogo() {
   return (
     <span className="flex items-center gap-2">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
         <path d="M12 2C9 6 6 9 2 12C6 15 9 18 12 22C15 18 18 15 22 12C18 9 15 6 12 2Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round"/>
         <circle cx="12" cy="12" r="2.5" fill="currentColor"/>
       </svg>
-      <span className="font-sans font-semibold text-[14.7px] tracking-wide">Higgsfield</span>
+      <span className="font-sans font-semibold text-[14.7px] tracking-wide">Seedream 5.0</span>
+    </span>
+  )
+}
+
+function NanoBananaProLogo() {
+  return (
+    <span className="flex items-center gap-2">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
+        <path d="M4 17C4 17 4 7 12 7C20 7 20 17 20 17" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+        <path d="M8 17C8 17 8 11 12 11C16 11 16 17 16 17" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+      </svg>
+      <span className="font-sans font-semibold text-[14.7px] tracking-wide">Nano Banana Pro</span>
     </span>
   )
 }
@@ -137,9 +155,9 @@ export function HiggsfieldButton({
         <>
           {/* Provider */}
           <div className="flex items-center bg-white/5 border border-border rounded-md p-[3px] flex-shrink-0">
-            {(['higgsfield', 'poyo'] as Provider[]).map((p) => (
+            {(['seedream', 'nanobanana'] as Provider[]).map((p) => (
               <button key={p} onClick={() => onProvider(p)} className={`px-2.5 py-[5px] rounded-[4px] text-[11px] font-heading font-semibold uppercase tracking-widest transition-all duration-150 cursor-pointer ${provider === p ? 'bg-white/15 text-white' : 'text-text-muted hover:text-white/60'}`}>
-                {p === 'higgsfield' ? 'HF' : 'NB2'}
+                {p === 'seedream' ? 'SEEDREAM' : 'NB PRO'}
               </button>
             ))}
           </div>
@@ -151,7 +169,7 @@ export function HiggsfieldButton({
           </div>
           {div}
           <div className="flex items-center gap-1 flex-shrink-0">
-            {(provider === 'higgsfield' ? HF_RESOLUTIONS : IMAGE_RESOLUTIONS).map((r) => (
+            {(provider === 'seedream' ? SEEDREAM_RESOLUTIONS : NANOBANANA_RESOLUTIONS).map((r) => (
               <AccentPill key={r} active={resolution === r} disabled={false} onClick={() => onResolution(r)}>{r.toUpperCase()}</AccentPill>
             ))}
           </div>
@@ -174,7 +192,7 @@ export function HiggsfieldButton({
           </div>
           {div}
           <div className="flex items-center gap-1 flex-shrink-0">
-            {IMAGE_RATIOS.map((r) => (
+            {MODEL_RATIOS.map((r) => (
               <Pill key={r} active={modelAspectRatio === r} disabled={false} onClick={() => onModelAspectRatio(r)}>{r}</Pill>
             ))}
           </div>
@@ -260,14 +278,14 @@ export function HiggsfieldButton({
           <SeedanceLogo />
         ) : mode === 'model' ? (
           modelEngine === 'recraft' ? <RecraftLogo /> : <NanoBananaLogo />
-        ) : provider === 'higgsfield' ? (
+        ) : provider === 'seedream' ? (
           <>
-            <HiggsfieldLogo />
+            <SeedreamLogo />
             {variations > 1 && <span className="text-[11.7px] font-mono text-white/40 ml-1">×{variations}</span>}
           </>
         ) : (
           <>
-            <NanoBananaLogo />
+            <NanoBananaProLogo />
             {variations > 1 && <span className="text-[11.7px] font-mono text-white/40 ml-1">×{variations}</span>}
           </>
         )}

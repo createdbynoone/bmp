@@ -14,7 +14,6 @@ electron.contextBridge.exposeInMainWorld("bmp", {
     return path;
   },
   generatePrompt: (data) => electron.ipcRenderer.invoke("generate-prompt", data),
-  fireHighsfield: (data) => electron.ipcRenderer.invoke("fire-higgsfield", data),
   fireVideo: (data) => electron.ipcRenderer.invoke("fire-video", data),
   firePoyoImage: (data) => electron.ipcRenderer.invoke("fire-poyo-image", data),
   fireModel: (data) => electron.ipcRenderer.invoke("fire-model", data),

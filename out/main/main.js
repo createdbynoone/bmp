@@ -1,4 +1,4 @@
-import { ipcMain, protocol, app, net, BrowserWindow, Menu, nativeImage, shell, dialog } from "electron";
+import { app, ipcMain, protocol, net, BrowserWindow, Menu, nativeImage, shell, screen, dialog } from "electron";
 import { join } from "path";
 import { readFileSync, writeFileSync, createWriteStream, rmdirSync, mkdirSync, readdirSync, renameSync, unlinkSync } from "fs";
 import { homedir } from "os";
@@ -13,6 +13,9 @@ const __filename = import.meta.filename;
 const __dirname = import.meta.dirname;
 const require2 = __cjs_mod__.createRequire(import.meta.url);
 const { autoUpdater } = electronUpdater;
+app.disableHardwareAcceleration();
+app.commandLine.appendSwitch("disable-background-networking");
+app.commandLine.appendSwitch("disable-features", "MediaRouter,OptimizationGuideModelDownloading,Translate");
 const ICON_STYLES = ["Default", "Dark", "ClearLight", "ClearDark", "TintedLight", "TintedDark"];
 function prefsPath() {
   return join(app.getPath("userData"), "bmp-prefs.json");
@@ -426,64 +429,6 @@ function downloadDmgWithProgress(url, destPath, token, onProgress) {
 handleWhenUnlocked("get-higgsfield-credits", async () => {
   return { credits: null, plan: "nano-banana-2" };
 });
-const HF_VALID_RESOLUTIONS = ["1k", "2k"];
-const HF_VALID_ASPECT_RATIOS = ["9:16", "4:5", "1:1", "16:9", "1:2", "2:1"];
-handleWhenUnlocked("fire-higgsfield", async (event, { prompt, aspectRatio, products, resolution }) => {
-  if (typeof prompt !== "string" || prompt.trim().length === 0 || prompt.length > 12e3) {
-    throw new Error("Invalid prompt");
-  }
-  if (!Array.isArray(products) || products.length > 30) throw new Error("Invalid products");
-  const sendProgress = (line) => event.sender.send("higgsfield-progress", { scope: "image", line });
-  const timestamp = Date.now();
-  const desktopPath = loadPrefs().outputPath;
-  const safeRes = HF_VALID_RESOLUTIONS.includes(resolution) ? resolution : "1k";
-  const safeRatio = HF_VALID_ASPECT_RATIOS.includes(aspectRatio) ? aspectRatio : "4:5";
-  sendProgress("Starting Higgsfield generation...");
-  const args = [
-    "generate",
-    "create",
-    "nano_banana_2",
-    "--prompt",
-    prompt,
-    "--resolution",
-    safeRes || "1k",
-    "--aspect_ratio",
-    safeRatio || "4:5",
-    "--wait"
-  ];
-  if (products.length > 0) {
-    for (const p of products) args.push("--image", p);
-    sendProgress(`Uploading ${products.length} product image${products.length > 1 ? "s" : ""} as reference...`);
-  }
-  try {
-    const { stdout, stderr } = await execFileAsync("higgsfield", args, { timeout: 3e5, env: shellEnv() });
-    const combined = (stdout + "\n" + stderr).trim();
-    if (combined) sendProgress(combined);
-    const cliError = combined.match(/\b(error|failed|failure|rejected|content.?policy|moderat|violat|unsafe|prohibited)\b/i);
-    if (cliError) {
-      const snippet = combined.slice(0, 200);
-      sendProgress(`Generation failed — ${snippet}`);
-      return { success: false, outputPath: "", error: snippet };
-    }
-    const urlMatch = combined.match(/https:\/\/\S+\.(png|jpg|jpeg|webp)/i);
-    if (urlMatch) {
-      const imageUrl = urlMatch[0];
-      const ext = imageUrl.split(".").pop()?.split("?")[0] ?? "jpg";
-      const outputName = `bmp_${timestamp}.${ext}`;
-      const outputPath = join(desktopPath, outputName);
-      sendProgress("Downloading to Desktop...");
-      await downloadFile(imageUrl, outputPath);
-      sendProgress(`Saved: ${outputName}`);
-      return { success: true, outputPath };
-    }
-    sendProgress("Generation failed — no image URL in CLI output");
-    return { success: false, outputPath: "", error: "No image URL in output" };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    sendProgress(`Error: ${msg}`);
-    return { success: false, outputPath: "", error: msg };
-  }
-});
 const MAX_FRAME_PX = 1280;
 async function uploadFrameToPOYO(filePath, apiKey, index) {
   let b64;
@@ -553,8 +498,13 @@ async function pollPOYOTask(taskId, apiKey, sendProgress) {
   }
   throw new Error("Timeout — task exceeded 10 minutes");
 }
-const NB2_RATIOS = ["9:16", "4:5", "1:1", "16:9"];
+const IMAGE_RATIOS = ["4:5", "9:16"];
+const MODEL_RATIOS = ["9:16", "4:5", "1:1", "16:9"];
 const POYO_MAX_REFS = 14;
+const IMAGE_PROVIDERS = {
+  seedream: { model: "seedream-5.0-pro", editModel: "seedream-5.0-pro-edit", resolutions: ["1k", "2k"] },
+  nanobanana: { model: "nano-banana-pro", editModel: "nano-banana-pro-edit", resolutions: ["1k", "2k", "4k"] }
+};
 handleWhenUnlocked("upload-poyo-refs", async (event, { products }) => {
   if (!Array.isArray(products)) throw new Error("Invalid products");
   const apiKey = process.env.POYO_API_KEY;
@@ -568,17 +518,20 @@ handleWhenUnlocked("upload-poyo-refs", async (event, { products }) => {
   const urls = await uploadFilesToPOYO(files, apiKey, sendProgress);
   return { urls };
 });
-handleWhenUnlocked("fire-poyo-image", async (event, { prompt, products, aspectRatio, resolution, imageUrls: presetUrls }) => {
+handleWhenUnlocked("fire-poyo-image", async (event, { prompt, products, aspectRatio, resolution, provider, imageUrls: presetUrls }) => {
   if (typeof prompt !== "string" || prompt.trim().length === 0) throw new Error("Invalid prompt");
   if (!Array.isArray(products)) throw new Error("Invalid products");
   if (presetUrls !== void 0 && (!Array.isArray(presetUrls) || presetUrls.some((u) => typeof u !== "string"))) throw new Error("Invalid imageUrls");
   const apiKey = process.env.POYO_API_KEY;
   if (!apiKey) throw new Error("POYO_API_KEY not set — add it to ~/.bmp.env");
+  const providerKey = provider === "seedream" ? "seedream" : "nanobanana";
+  const providerCfg = IMAGE_PROVIDERS[providerKey];
   const timestamp = Date.now();
   const desktopPath = loadPrefs().outputPath;
   const sendProgress = (line) => event.sender.send("higgsfield-progress", { scope: "image", line });
-  const safeSize = NB2_RATIOS.includes(aspectRatio) ? aspectRatio : "4:5";
-  const safeRes = ["1k", "2k", "4k"].includes(resolution) ? resolution.toUpperCase() : "2K";
+  const safeSize = IMAGE_RATIOS.includes(aspectRatio) ? aspectRatio : "4:5";
+  const allowedResolutions = providerCfg.resolutions;
+  const safeRes = (allowedResolutions.includes(resolution) ? resolution : allowedResolutions[allowedResolutions.length - 1]).toUpperCase();
   let imageUrls = (presetUrls ?? []).slice(0, POYO_MAX_REFS);
   if (imageUrls.length === 0 && products.length > 0) {
     let files = products;
@@ -593,10 +546,10 @@ handleWhenUnlocked("fire-poyo-image", async (event, { prompt, products, aspectRa
       return { success: false, outputPath: "", error: String(err) };
     }
   }
-  const model = imageUrls.length > 0 ? "nano-banana-2-edit" : "nano-banana-2";
+  const model = imageUrls.length > 0 ? providerCfg.editModel : providerCfg.model;
   const input = { prompt, size: safeSize, resolution: safeRes };
   if (imageUrls.length > 0) input.image_urls = imageUrls;
-  sendProgress(`Submitting Nano Banana 2 (${safeSize} · ${safeRes})...`);
+  sendProgress(`Submitting ${model} (${safeSize} · ${safeRes})...`);
   const submitRes = await fetch("https://api.poyo.ai/api/generate/submit", {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
@@ -752,7 +705,7 @@ handleWhenUnlocked("fire-model", async (event, { prompt, engine, aspectRatio, re
   const sendProgress = (line) => event.sender.send("higgsfield-progress", { scope: "model", line });
   const safeGender = gender === "male" ? "male" : "female";
   const safeEngine = engine === "recraft" ? "recraft" : "nb2";
-  const safeSize = NB2_RATIOS.includes(aspectRatio) ? aspectRatio : "4:5";
+  const safeSize = MODEL_RATIOS.includes(aspectRatio) ? aspectRatio : "4:5";
   const safeRes = ["1k", "2k", "4k"].includes(resolution) ? resolution.toUpperCase() : "2K";
   const poyoKey = process.env.POYO_API_KEY;
   let sku;
@@ -883,10 +836,15 @@ handleWhenUnlocked("fire-video", async (event, { prompt, products: frames, video
     return { success: false, outputPath: "", error: msg };
   }
 });
+function initialWindowSize() {
+  const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
+  const width = Math.round(Math.min(Math.max(screenW * 0.48, 800), 1100));
+  const height = Math.round(Math.min(Math.max(screenH * 0.72, 600), 860));
+  return { width, height };
+}
 function createWindow() {
   const win = new BrowserWindow({
-    width: 920,
-    height: 720,
+    ...initialWindowSize(),
     minWidth: 800,
     minHeight: 600,
     backgroundColor: "#0c0c0c",
@@ -897,11 +855,15 @@ function createWindow() {
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
-      zoomFactor: 1.1
+      // Was 1.1 (+10% UI) — now 0.95 (-5% off native), shrinking the whole
+      // interface a bit further; window sizing above does the screen-adaptive
+      // work a manual zoom hack used to approximate.
+      zoomFactor: 0.95,
+      spellcheck: false
     }
   });
   win.webContents.on("did-finish-load", () => {
-    win.webContents.setZoomFactor(1.1);
+    win.webContents.setZoomFactor(0.95);
   });
   win.webContents.on("will-navigate", (e) => e.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));

@@ -4,11 +4,11 @@ Electron app para generar prompts de marketing de prendas Brotherhood y disparar
 
 **Dev:** `npm run dev`
 **Release:** `bash scripts/publish.sh` (build local + subida via gh — ver sección Release)
-**Versión actual:** `1.7.0` (2026-07-10: modo Model con macro face + SKU, tareas ref-count sin pausas, ActivityLog; Angles ×4 removido)
+**Versión actual:** `1.8.0` (2026-07-24: Image tab migrado a Seedream 5.0 Pro / Nano Banana Pro vía POYO — Higgsfield CLI removido, ratios 4:5/9:16 only; RAM más liviana — sin GPU process, sin spellcheck, sin background networking de Chromium; ventana con tamaño dinámico por pantalla y zoomFactor 0.95)
 
 ## Lock screen + seguridad (v1.6.0, 2026-07-07)
 - Primer arranque en una máquina pide passphrase (`brother*1998_hood`, mismo patrón que Brotherhood Canvas/Sorter/Product Builder) antes de tocar filesystem/API keys — scrypt hash+salt propios en `main.ts`, nunca el texto plano; `timingSafeEqual`; backoff exponencial persistido en `bmp-prefs.json`
-- `handleWhenUnlocked()` gatea todos los IPC (`generate-prompt`, `fire-higgsfield`, `fire-poyo-image`, `fire-video`, `upload-poyo-refs`, `get-memory-entries`, etc.)
+- `handleWhenUnlocked()` gatea todos los IPC (`generate-prompt`, `fire-poyo-image`, `fire-video`, `upload-poyo-refs`, `get-memory-entries`, etc.)
 - **Vulnerabilidad real corregida**: el protocolo `localfile://` hacía `net.fetch('file://' + path)` con CUALQUIER path, sin restricción. Ahora `knownLocalPaths` (Set poblado por el wrapper de `getPathForFile` en preload) es el único conjunto de paths servibles, y solo si `unlocked`
 - CSP agregado a `index.html` (no existía)
 - Para regenerar el hash si cambia la clave: `node -e "const c=require('crypto');const s=c.randomBytes(16);console.log(s.toString('hex'), c.scryptSync('NUEVA_CLAVE',s,64).toString('hex'))"` y reemplazar `LOCK_SALT_HEX`/`LOCK_HASH_HEX`
@@ -19,17 +19,17 @@ Electron app para generar prompts de marketing de prendas Brotherhood y disparar
 - electron-updater 6
 - @anthropic-ai/sdk 0.109+ (`claude-sonnet-5` con visión, constante `CLAUDE_MODEL` en main.ts) — <0.40 rompe en Electron 43 (gunzip "Premature close")
 - **Electron 32+ eliminó `File.path`** — drag & drop usa `webUtils.getPathForFile()` expuesto como `window.bmp.getPathForFile`
-- zoomFactor 1.1 global (+10% UI, en webPreferences + did-finish-load); will-navigate prevented + setWindowOpenHandler deny
+- zoomFactor 0.95 global (era 1.1/+10%, reducido 2026-07-24 a -5%) — tamaño inicial dinámico vía `initialWindowSize()` (48%/72% del `workAreaSize` de la pantalla, clamp 800×600–1100×860); will-navigate prevented + setWindowOpenHandler deny
 - Contraste: text-secondary #9A9A9A / text-muted #666666; titlebar h-11 alineado a semáforos
 
 ## Modos
 
-### Image (`[HF | NB2]`) — Gemini removido 2026-07-03
-Ratios unificados para ambos providers: **9:16 / 4:5 / 1:1 / 16:9** (default 4:5)
-| Provider | Modelo | Resoluciones | Variaciones |
+### Image (`[SEEDREAM | NB PRO]`) — Higgsfield CLI removido, POYO-only (2026-07-24)
+Ratios unificados para ambos providers: **4:5 / 9:16** (default 4:5)
+| Provider | Modelo (POYO) | Resoluciones | Variaciones |
 |---|---|---|---|
-| HF (Higgsfield) | nano_banana_2 CLI | 1k / 2k | ×1–4 |
-| NB2 (POYO, default) | nano-banana-2(-edit) | 1K / 2K / 4K | ×1–4 |
+| SEEDREAM | seedream-5.0-pro(-edit) | 1K / 2K | ×1–4 |
+| NB PRO (default) | nano-banana-pro(-edit) | 1K / 2K / 4K | ×1–4 |
 
 **POYO límite duro: max 14 imágenes de referencia por request** (`POYO_MAX_REFS`). La app las recorta a 14 con warning en vez de fallar. Para disparos paralelos (variaciones) las refs se suben UNA vez via `upload-poyo-refs` y las URLs se comparten (`imageUrls` en `fire-poyo-image`) — re-subir por tarea reventaba rate limits de POYO.
 
@@ -90,8 +90,7 @@ preload: join(__dirname, '../preload/preload.cjs')
 
 ## IPC handlers (main.ts)
 - `generate-prompt` — Claude Sonnet 5 visión → prompt
-- `fire-higgsfield` — Higgsfield CLI (solo HF; Gemini removido)
-- `fire-poyo-image` — POYO Nano Banana 2 (acepta `imageUrls` pre-subidas)
+- `fire-poyo-image` — POYO Seedream 5.0 Pro / Nano Banana Pro (acepta `provider` + `imageUrls` pre-subidas)
 - `fire-model` — pipeline Model completo (SKU + full body + macro face; NB2 o Recraft)
 - `upload-poyo-refs` — sube refs una vez, retorna URLs para fan-out paralelo
 - `fire-video` — POYO Seedance 2

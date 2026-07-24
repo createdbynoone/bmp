@@ -18,13 +18,10 @@ contextBridge.exposeInMainWorld('bmp', {
   generatePrompt: (data: { refs: string[]; products: string[]; description: string }) =>
     ipcRenderer.invoke('generate-prompt', data),
 
-  fireHighsfield: (data: { prompt: string; aspectRatio: string; products: string[]; resolution: string }) =>
-    ipcRenderer.invoke('fire-higgsfield', data),
-
   fireVideo: (data: { prompt: string; products: string[]; videoModel: string; aspectRatio: string; resolution: string; duration: number }) =>
     ipcRenderer.invoke('fire-video', data),
 
-  firePoyoImage: (data: { prompt: string; products: string[]; aspectRatio: string; resolution: string; imageUrls?: string[] }) =>
+  firePoyoImage: (data: { prompt: string; products: string[]; aspectRatio: string; resolution: string; provider: 'seedream' | 'nanobanana'; imageUrls?: string[] }) =>
     ipcRenderer.invoke('fire-poyo-image', data),
 
   fireModel: (data: { prompt: string; engine: 'nb2' | 'recraft'; aspectRatio: string; resolution: string; gender: 'female' | 'male' }) =>

@@ -7172,20 +7172,31 @@ function PromptOutput({ prompt, className = "" }) {
     /* @__PURE__ */ jsxRuntimeExports.jsx("pre", { className: "prompt-output p-4 text-[13.7px] font-mono text-text-primary leading-relaxed whitespace-pre-wrap overflow-auto flex-1 min-h-0", children: prompt })
   ] });
 }
-const IMAGE_RATIOS = ["9:16", "4:5", "1:1", "16:9"];
-const HF_RESOLUTIONS = ["1k", "2k"];
+const IMAGE_RATIOS = ["4:5", "9:16"];
+const SEEDREAM_RESOLUTIONS = ["1k", "2k"];
+const NANOBANANA_RESOLUTIONS = ["1k", "2k", "4k"];
+const MODEL_RATIOS = ["9:16", "4:5", "1:1", "16:9"];
 const IMAGE_RESOLUTIONS = ["1k", "2k", "4k"];
 const VIDEO_RATIOS = ["9:16", "16:9", "auto"];
 const VIDEO_RESOLUTIONS = ["720p", "1080p"];
 const VIDEO_DURATIONS = [5, 10, 15];
 const VARIATIONS = [1, 2, 3, 4];
-function HiggsfieldLogo() {
+function SeedreamLogo() {
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "flex items-center gap-2", children: [
     /* @__PURE__ */ jsxRuntimeExports.jsxs("svg", { width: "13", height: "13", viewBox: "0 0 24 24", fill: "none", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx("path", { d: "M12 2C9 6 6 9 2 12C6 15 9 18 12 22C15 18 18 15 22 12C18 9 15 6 12 2Z", stroke: "currentColor", strokeWidth: "1.8", strokeLinejoin: "round" }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("circle", { cx: "12", cy: "12", r: "2.5", fill: "currentColor" })
     ] }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "font-sans font-semibold text-[14.7px] tracking-wide", children: "Higgsfield" })
+    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "font-sans font-semibold text-[14.7px] tracking-wide", children: "Seedream 5.0" })
+  ] });
+}
+function NanoBananaProLogo() {
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "flex items-center gap-2", children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("svg", { width: "13", height: "13", viewBox: "0 0 24 24", fill: "none", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("path", { d: "M4 17C4 17 4 7 12 7C20 7 20 17 20 17", stroke: "currentColor", strokeWidth: "1.8", strokeLinecap: "round" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("path", { d: "M8 17C8 17 8 11 12 11C16 11 16 17 16 17", stroke: "currentColor", strokeWidth: "1.8", strokeLinecap: "round" })
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "font-sans font-semibold text-[14.7px] tracking-wide", children: "Nano Banana Pro" })
   ] });
 }
 function NanoBananaLogo() {
@@ -7257,11 +7268,11 @@ function HiggsfieldButton({
   const div = /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "w-px h-4 bg-border flex-shrink-0" });
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-2", children: [
     mode === "image" ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center bg-white/5 border border-border rounded-md p-[3px] flex-shrink-0", children: ["higgsfield", "poyo"].map((p) => /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => onProvider(p), className: `px-2.5 py-[5px] rounded-[4px] text-[11px] font-heading font-semibold uppercase tracking-widest transition-all duration-150 cursor-pointer ${provider === p ? "bg-white/15 text-white" : "text-text-muted hover:text-white/60"}`, children: p === "higgsfield" ? "HF" : "NB2" }, p)) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center bg-white/5 border border-border rounded-md p-[3px] flex-shrink-0", children: ["seedream", "nanobanana"].map((p) => /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => onProvider(p), className: `px-2.5 py-[5px] rounded-[4px] text-[11px] font-heading font-semibold uppercase tracking-widest transition-all duration-150 cursor-pointer ${provider === p ? "bg-white/15 text-white" : "text-text-muted hover:text-white/60"}`, children: p === "seedream" ? "SEEDREAM" : "NB PRO" }, p)) }),
       div,
       /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1 flex-shrink-0", children: IMAGE_RATIOS.map((r) => /* @__PURE__ */ jsxRuntimeExports.jsx(Pill, { active: aspectRatio === r, disabled: false, onClick: () => onAspectRatio(r), children: r }, r)) }),
       div,
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1 flex-shrink-0", children: (provider === "higgsfield" ? HF_RESOLUTIONS : IMAGE_RESOLUTIONS).map((r) => /* @__PURE__ */ jsxRuntimeExports.jsx(AccentPill, { active: resolution === r, disabled: false, onClick: () => onResolution(r), children: r.toUpperCase() }, r)) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1 flex-shrink-0", children: (provider === "seedream" ? SEEDREAM_RESOLUTIONS : NANOBANANA_RESOLUTIONS).map((r) => /* @__PURE__ */ jsxRuntimeExports.jsx(AccentPill, { active: resolution === r, disabled: false, onClick: () => onResolution(r), children: r.toUpperCase() }, r)) }),
       div,
       /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1 flex-shrink-0", children: VARIATIONS.map((v) => /* @__PURE__ */ jsxRuntimeExports.jsxs(Pill, { active: variations === v, disabled: false, onClick: () => onVariations(v), children: [
         "×",
@@ -7270,7 +7281,7 @@ function HiggsfieldButton({
     ] }) : mode === "model" ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center bg-white/5 border border-border rounded-md p-[3px] flex-shrink-0", children: ["nb2", "recraft"].map((e) => /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => onModelEngine(e), className: `px-2.5 py-[5px] rounded-[4px] text-[11px] font-heading font-semibold uppercase tracking-widest transition-all duration-150 cursor-pointer ${modelEngine === e ? "bg-white/15 text-white" : "text-text-muted hover:text-white/60"}`, children: e === "nb2" ? "NB2" : "RECRAFT" }, e)) }),
       div,
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1 flex-shrink-0", children: IMAGE_RATIOS.map((r) => /* @__PURE__ */ jsxRuntimeExports.jsx(Pill, { active: modelAspectRatio === r, disabled: false, onClick: () => onModelAspectRatio(r), children: r }, r)) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1 flex-shrink-0", children: MODEL_RATIOS.map((r) => /* @__PURE__ */ jsxRuntimeExports.jsx(Pill, { active: modelAspectRatio === r, disabled: false, onClick: () => onModelAspectRatio(r), children: r }, r)) }),
       div,
       modelEngine === "nb2" ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1 flex-shrink-0", children: IMAGE_RESOLUTIONS.map((r) => /* @__PURE__ */ jsxRuntimeExports.jsx(AccentPill, { active: modelResolution === r, disabled: false, onClick: () => onModelResolution(r), children: r.toUpperCase() }, r)) }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[11px] font-mono font-semibold text-accent/70 tracking-wide px-1 flex-shrink-0", title: "Recraft v4.1 Pro genera siempre a 4MP", children: "4MP PRO" }),
       div,
@@ -7304,14 +7315,14 @@ function HiggsfieldButton({
         ] }) : status === "done" ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("svg", { width: "12", height: "12", viewBox: "0 0 14 14", fill: "none", children: /* @__PURE__ */ jsxRuntimeExports.jsx("path", { d: "M2 7l3.5 3.5 6.5-6.5", stroke: "currentColor", strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round" }) }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[12.7px] font-heading font-semibold uppercase tracking-widest", children: "Done" })
-        ] }) : status === "error" ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[12.7px] font-heading font-semibold uppercase tracking-widest text-red-400", children: "Error — retry" }) : mode === "video" ? /* @__PURE__ */ jsxRuntimeExports.jsx(SeedanceLogo, {}) : mode === "model" ? modelEngine === "recraft" ? /* @__PURE__ */ jsxRuntimeExports.jsx(RecraftLogo, {}) : /* @__PURE__ */ jsxRuntimeExports.jsx(NanoBananaLogo, {}) : provider === "higgsfield" ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx(HiggsfieldLogo, {}),
+        ] }) : status === "error" ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[12.7px] font-heading font-semibold uppercase tracking-widest text-red-400", children: "Error — retry" }) : mode === "video" ? /* @__PURE__ */ jsxRuntimeExports.jsx(SeedanceLogo, {}) : mode === "model" ? modelEngine === "recraft" ? /* @__PURE__ */ jsxRuntimeExports.jsx(RecraftLogo, {}) : /* @__PURE__ */ jsxRuntimeExports.jsx(NanoBananaLogo, {}) : provider === "seedream" ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx(SeedreamLogo, {}),
           variations > 1 && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-[11.7px] font-mono text-white/40 ml-1", children: [
             "×",
             variations
           ] })
         ] }) : /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx(NanoBananaLogo, {}),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(NanoBananaProLogo, {}),
           variations > 1 && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-[11.7px] font-mono text-white/40 ml-1", children: [
             "×",
             variations
@@ -7825,7 +7836,7 @@ function App() {
   const [generateStatus, setGenerateStatus] = reactExports.useState("idle");
   const [error, setError] = reactExports.useState("");
   const [memoryId, setMemoryId] = reactExports.useState(null);
-  const [provider, setProvider] = reactExports.useState("poyo");
+  const [provider, setProvider] = reactExports.useState("nanobanana");
   const [aspectRatio, setAspectRatio] = reactExports.useState("4:5");
   const [resolution, setResolution] = reactExports.useState("2k");
   const [variations, setVariations] = reactExports.useState(1);
@@ -7908,7 +7919,7 @@ function App() {
   }, [authState]);
   const handleProviderChange = (p) => {
     setProvider(p);
-    if (p === "higgsfield" && resolution === "4k") setResolution("2k");
+    if (p === "seedream" && resolution === "4k") setResolution("2k");
   };
   const handleModeChange = (m) => setMode(m);
   const canGenerate = refs.length > 0 && products.length > 0 && description.trim().length > 0;
@@ -7939,13 +7950,13 @@ function App() {
   };
   const fireBatch = async (prompts) => {
     let poyoUrls;
-    if (provider === "poyo" && products.length > 0 && prompts.length > 1) {
+    if (products.length > 0 && prompts.length > 1) {
       const { urls } = await window.bmp.uploadPoyoRefs({ products });
       poyoUrls = urls;
     }
     const settled = await Promise.allSettled(
       prompts.map(
-        (p) => provider === "poyo" ? window.bmp.firePoyoImage({ prompt: p, products, aspectRatio, resolution, imageUrls: poyoUrls }) : window.bmp.fireHighsfield({ prompt: p, aspectRatio, products, resolution })
+        (p) => window.bmp.firePoyoImage({ prompt: p, products, aspectRatio, resolution, provider, imageUrls: poyoUrls })
       )
     );
     return settled.filter((s) => s.status === "fulfilled" && s.value.success).length;
@@ -7954,7 +7965,7 @@ function App() {
     if (!prompt || !fireGate()) return;
     const firedMemoryId = memoryId;
     setImageTasks((n) => n + 1);
-    pushLog("image", `▶ ${provider === "poyo" ? "Nano Banana 2" : "Higgsfield"} ×${variations} · ${aspectRatio} · ${resolution.toUpperCase()}`);
+    pushLog("image", `▶ ${provider === "seedream" ? "Seedream 5.0" : "Nano Banana Pro"} ×${variations} · ${aspectRatio} · ${resolution.toUpperCase()}`);
     try {
       const succeeded = await fireBatch(Array.from({ length: variations }, () => prompt));
       const failed = variations - succeeded;
@@ -8045,7 +8056,7 @@ function App() {
       }
     }
   };
-  const footerLabel = mode === "video" ? `seedance-2 · ${videoAspectRatio} · ${videoResolution} · ${duration}s` : mode === "model" ? `${modelEngine === "recraft" ? "recraft-v4.1-pro" : "nano-banana-2"} · ${modelAspectRatio}${modelEngine === "nb2" ? ` · ${modelResolution.toUpperCase()}` : " · 4MP"} · ${modelGender === "male" ? "SMM" : "SMF"} + face macro` : `${provider === "higgsfield" ? "higgsfield" : "nano-banana-2"} · ${aspectRatio} · ${resolution.toUpperCase()}`;
+  const footerLabel = mode === "video" ? `seedance-2 · ${videoAspectRatio} · ${videoResolution} · ${duration}s` : mode === "model" ? `${modelEngine === "recraft" ? "recraft-v4.1-pro" : "nano-banana-2"} · ${modelAspectRatio}${modelEngine === "nb2" ? ` · ${modelResolution.toUpperCase()}` : " · 4MP"} · ${modelGender === "male" ? "SMM" : "SMF"} + face macro` : `${provider === "seedream" ? "seedream-5.0-pro" : "nano-banana-pro"} · ${aspectRatio} · ${resolution.toUpperCase()}`;
   const fireDisabled = mode === "video" ? !videoPrompt.trim() : mode === "model" ? !modelPrompt.trim() : !prompt;
   const showImageLog = imageLog.length > 0 || imageTasks > 0;
   if (authState === "checking") return null;

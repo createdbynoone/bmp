@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, nativeImage, protocol, net, Menu, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, nativeImage, protocol, net, Menu, dialog, screen } from 'electron'
 import { join } from 'path'
 import { readFileSync, writeFileSync, createWriteStream, renameSync, mkdirSync, readdirSync, unlinkSync, rmdirSync } from 'fs'
 import { homedir } from 'os'
@@ -9,6 +9,19 @@ import https from 'https'
 import Anthropic from '@anthropic-ai/sdk'
 import electronUpdater from 'electron-updater'
 const { autoUpdater } = electronUpdater
+
+// ─── RAM footprint ──────────────────────────────────────────────────────────
+// BMP is a form + a couple of tabs — no canvas, no <video>, no WebGL anywhere
+// in the renderer, so the GPU/compositor process buys nothing here. Dropping
+// it removes an entire Chromium process (~60-100MB RSS) with zero visual or
+// functional change. Must run before app is ready.
+app.disableHardwareAcceleration()
+// Chromium's own background services (Safe Browsing pings, component/variations
+// updates, media session discovery) — irrelevant to a local tool, not used by
+// any app feature, safe to strip. Does not touch our own fetch() calls to
+// Anthropic/POYO, which the main process makes directly on demand.
+app.commandLine.appendSwitch('disable-background-networking')
+app.commandLine.appendSwitch('disable-features', 'MediaRouter,OptimizationGuideModelDownloading,Translate')
 
 // ─── Preferences ──────────────────────────────────────────────────────────────
 
@@ -536,70 +549,6 @@ handleWhenUnlocked('get-higgsfield-credits', async () => {
   return { credits: null, plan: 'nano-banana-2' }
 })
 
-const HF_VALID_RESOLUTIONS = ['1k', '2k'] as const
-const HF_VALID_ASPECT_RATIOS = ['9:16', '4:5', '1:1', '16:9', '1:2', '2:1'] as const
-
-handleWhenUnlocked('fire-higgsfield', async (event, { prompt, aspectRatio, products, resolution }: { prompt: string; aspectRatio: string; products: string[]; resolution?: string }) => {
-  if (typeof prompt !== 'string' || prompt.trim().length === 0 || prompt.length > 12000) {
-    throw new Error('Invalid prompt')
-  }
-  if (!Array.isArray(products) || products.length > 30) throw new Error('Invalid products')
-
-  const sendProgress = (line: string) => event.sender.send('higgsfield-progress', { scope: 'image', line })
-  const timestamp = Date.now()
-  const desktopPath = loadPrefs().outputPath
-
-  const safeRes = HF_VALID_RESOLUTIONS.includes(resolution as typeof HF_VALID_RESOLUTIONS[number]) ? resolution : '1k'
-  const safeRatio = HF_VALID_ASPECT_RATIOS.includes(aspectRatio as typeof HF_VALID_ASPECT_RATIOS[number]) ? aspectRatio : '4:5'
-
-  sendProgress('Starting Higgsfield generation...')
-
-  const args = [
-    'generate', 'create', 'nano_banana_2',
-    '--prompt', prompt,
-    '--resolution', safeRes || '1k',
-    '--aspect_ratio', safeRatio || '4:5',
-    '--wait',
-  ]
-
-  if (products.length > 0) {
-    for (const p of products) args.push('--image', p)
-    sendProgress(`Uploading ${products.length} product image${products.length > 1 ? 's' : ''} as reference...`)
-  }
-
-  try {
-    const { stdout, stderr } = await execFileAsync('higgsfield', args, { timeout: 300_000, env: shellEnv() })
-    const combined = (stdout + '\n' + stderr).trim()
-    if (combined) sendProgress(combined)
-
-    const cliError = combined.match(/\b(error|failed|failure|rejected|content.?policy|moderat|violat|unsafe|prohibited)\b/i)
-    if (cliError) {
-      const snippet = combined.slice(0, 200)
-      sendProgress(`Generation failed — ${snippet}`)
-      return { success: false, outputPath: '', error: snippet }
-    }
-
-    const urlMatch = combined.match(/https:\/\/\S+\.(png|jpg|jpeg|webp)/i)
-    if (urlMatch) {
-      const imageUrl = urlMatch[0]
-      const ext = imageUrl.split('.').pop()?.split('?')[0] ?? 'jpg'
-      const outputName = `bmp_${timestamp}.${ext}`
-      const outputPath = join(desktopPath, outputName)
-      sendProgress('Downloading to Desktop...')
-      await downloadFile(imageUrl, outputPath)
-      sendProgress(`Saved: ${outputName}`)
-      return { success: true, outputPath }
-    }
-
-    sendProgress('Generation failed — no image URL in CLI output')
-    return { success: false, outputPath: '', error: 'No image URL in output' }
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err)
-    sendProgress(`Error: ${msg}`)
-    return { success: false, outputPath: '', error: msg }
-  }
-})
-
 // ── POYO.ai shared utilities ───────────────────────────────────────────────────
 
 const MAX_FRAME_PX = 1280
@@ -678,10 +627,21 @@ async function pollPOYOTask(
   throw new Error('Timeout — task exceeded 10 minutes')
 }
 
-// ── POYO.ai Nano Banana 2 — image generation ───────────────────────────────────
+// ── POYO.ai image generation — Seedream 5.0 Pro / Nano Banana Pro ──────────────
 
-const NB2_RATIOS = ['9:16', '4:5', '1:1', '16:9'] as const
-const POYO_MAX_REFS = 14 // POYO nano-banana-2(-edit) hard limit: 14 reference images per request
+const IMAGE_RATIOS = ['4:5', '9:16'] as const
+// Model tab (fire-model, NB2/Recraft) keeps the full ratio set — unaffected by
+// the Image tab's 4:5/9:16-only restriction above
+const MODEL_RATIOS = ['9:16', '4:5', '1:1', '16:9'] as const
+const POYO_MAX_REFS = 14 // POYO hard limit: 14 reference images per request
+
+// Per-provider model slugs and resolution ceiling — Seedream 5.0 Pro on POYO
+// only exposes 1K/2K, Nano Banana Pro goes up to native 4K
+const IMAGE_PROVIDERS = {
+  seedream: { model: 'seedream-5.0-pro', editModel: 'seedream-5.0-pro-edit', resolutions: ['1k', '2k'] },
+  nanobanana: { model: 'nano-banana-pro', editModel: 'nano-banana-pro-edit', resolutions: ['1k', '2k', '4k'] },
+} as const
+type ImageProvider = keyof typeof IMAGE_PROVIDERS
 
 // Upload product refs once and return their POYO URLs — used to fan out multiple
 // generations (variations) without re-uploading the same images per task
@@ -701,8 +661,8 @@ handleWhenUnlocked('upload-poyo-refs', async (event, { products }: { products: s
   return { urls }
 })
 
-handleWhenUnlocked('fire-poyo-image', async (event, { prompt, products, aspectRatio, resolution, imageUrls: presetUrls }: {
-  prompt: string; products: string[]; aspectRatio: string; resolution: string; imageUrls?: string[]
+handleWhenUnlocked('fire-poyo-image', async (event, { prompt, products, aspectRatio, resolution, provider, imageUrls: presetUrls }: {
+  prompt: string; products: string[]; aspectRatio: string; resolution: string; provider?: string; imageUrls?: string[]
 }) => {
   if (typeof prompt !== 'string' || prompt.trim().length === 0) throw new Error('Invalid prompt')
   if (!Array.isArray(products)) throw new Error('Invalid products')
@@ -711,11 +671,15 @@ handleWhenUnlocked('fire-poyo-image', async (event, { prompt, products, aspectRa
   const apiKey = process.env.POYO_API_KEY
   if (!apiKey) throw new Error('POYO_API_KEY not set — add it to ~/.bmp.env')
 
+  const providerKey: ImageProvider = provider === 'seedream' ? 'seedream' : 'nanobanana'
+  const providerCfg = IMAGE_PROVIDERS[providerKey]
+
   const timestamp = Date.now()
   const desktopPath = loadPrefs().outputPath
   const sendProgress = (line: string) => event.sender.send('higgsfield-progress', { scope: 'image', line })
-  const safeSize = NB2_RATIOS.includes(aspectRatio as typeof NB2_RATIOS[number]) ? aspectRatio : '4:5'
-  const safeRes = ['1k', '2k', '4k'].includes(resolution) ? resolution.toUpperCase() : '2K'
+  const safeSize = IMAGE_RATIOS.includes(aspectRatio as typeof IMAGE_RATIOS[number]) ? aspectRatio : '4:5'
+  const allowedResolutions: readonly string[] = providerCfg.resolutions
+  const safeRes = (allowedResolutions.includes(resolution) ? resolution : allowedResolutions[allowedResolutions.length - 1]).toUpperCase()
 
   // Use pre-uploaded reference URLs when provided; otherwise upload now (max 14)
   let imageUrls: string[] = (presetUrls ?? []).slice(0, POYO_MAX_REFS)
@@ -734,11 +698,11 @@ handleWhenUnlocked('fire-poyo-image', async (event, { prompt, products, aspectRa
   }
 
   // Use edit model when product images provided (better adherence to reference)
-  const model = imageUrls.length > 0 ? 'nano-banana-2-edit' : 'nano-banana-2'
+  const model = imageUrls.length > 0 ? providerCfg.editModel : providerCfg.model
   const input: Record<string, unknown> = { prompt, size: safeSize, resolution: safeRes }
   if (imageUrls.length > 0) input.image_urls = imageUrls
 
-  sendProgress(`Submitting Nano Banana 2 (${safeSize} · ${safeRes})...`)
+  sendProgress(`Submitting ${model} (${safeSize} · ${safeRes})...`)
 
   const submitRes = await fetch('https://api.poyo.ai/api/generate/submit', {
     method: 'POST',
@@ -922,7 +886,7 @@ handleWhenUnlocked('fire-model', async (event, { prompt, engine, aspectRatio, re
   const sendProgress = (line: string) => event.sender.send('higgsfield-progress', { scope: 'model', line })
   const safeGender = gender === 'male' ? 'male' as const : 'female' as const
   const safeEngine = engine === 'recraft' ? 'recraft' : 'nb2'
-  const safeSize = NB2_RATIOS.includes(aspectRatio as typeof NB2_RATIOS[number]) ? aspectRatio : '4:5'
+  const safeSize = MODEL_RATIOS.includes(aspectRatio as typeof MODEL_RATIOS[number]) ? aspectRatio : '4:5'
   const safeRes = ['1k', '2k', '4k'].includes(resolution) ? resolution.toUpperCase() : '2K'
   const poyoKey = process.env.POYO_API_KEY
 
@@ -1066,10 +1030,21 @@ handleWhenUnlocked('fire-video', async (event, { prompt, products: frames, video
   }
 })
 
+// Scales the initial window to the display it opens on instead of a fixed
+// 920×720, so it looks right from a 13" laptop to an ultrawide/5K monitor.
+// Bounds are chosen so a standard 1920×1080 screen lands ~920×720 — same as
+// the old hardcoded size — while smaller/larger screens get a proportional
+// window instead of one that's oversized or cramped.
+function initialWindowSize(): { width: number; height: number } {
+  const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize
+  const width = Math.round(Math.min(Math.max(screenW * 0.48, 800), 1100))
+  const height = Math.round(Math.min(Math.max(screenH * 0.72, 600), 860))
+  return { width, height }
+}
+
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
-    width: 920,
-    height: 720,
+    ...initialWindowSize(),
     minWidth: 800,
     minHeight: 600,
     backgroundColor: '#0c0c0c',
@@ -1080,13 +1055,18 @@ function createWindow(): BrowserWindow {
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
-      zoomFactor: 1.1,
+      // Was 1.1 (+10% UI) — now 0.95 (-5% off native), shrinking the whole
+      // interface a bit further; window sizing above does the screen-adaptive
+      // work a manual zoom hack used to approximate.
+      zoomFactor: 0.95,
+      spellcheck: false,
     },
   })
 
-  // webPreferences zoomFactor is unreliable on first load — enforce it
+  // webPreferences zoomFactor is unreliable on first load for non-default
+  // values — enforce it once the page is up
   win.webContents.on('did-finish-load', () => {
-    win.webContents.setZoomFactor(1.1)
+    win.webContents.setZoomFactor(0.95)
   })
 
   win.webContents.on('will-navigate', e => e.preventDefault())
