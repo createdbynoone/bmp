@@ -4,7 +4,7 @@ Electron app para generar prompts de marketing de prendas Brotherhood y disparar
 
 **Dev:** `npm run dev`
 **Release:** `bash scripts/publish.sh` (build local + subida via gh — ver sección Release)
-**Versión actual:** `1.8.0` (2026-07-24: Image tab migrado a Seedream 5.0 Pro / Nano Banana Pro vía POYO — Higgsfield CLI removido, ratios 4:5/9:16 only; RAM más liviana — sin GPU process, sin spellcheck, sin background networking de Chromium; ventana con tamaño dinámico por pantalla y zoomFactor 0.95)
+**Versión actual:** `1.9.0` (2026-08-06: proveedor de imagen/video migrado de POYO a **Runware** — mismos modelos, refs ahora van embebidas como data URI en vez de subirse a una URL hosteada; ver sección Runware API abajo) · (2026-07-24: Image tab migrado a Seedream 5.0 Pro / Nano Banana Pro — Higgsfield CLI removido, ratios 4:5/9:16 only; RAM más liviana — sin GPU process, sin spellcheck, sin background networking de Chromium; ventana con tamaño dinámico por pantalla y zoomFactor 0.95)
 
 ## Lock screen + seguridad (v1.6.0, 2026-07-07)
 - Primer arranque en una máquina pide passphrase (`brother*1998_hood`, mismo patrón que Brotherhood Canvas/Sorter/Product Builder) antes de tocar filesystem/API keys — scrypt hash+salt propios en `main.ts`, nunca el texto plano; `timingSafeEqual`; backoff exponencial persistido en `bmp-prefs.json`
@@ -24,53 +24,53 @@ Electron app para generar prompts de marketing de prendas Brotherhood y disparar
 
 ## Modos
 
-### Image (`[SEEDREAM | NB PRO]`) — Higgsfield CLI removido, POYO-only (2026-07-24)
+### Image (`[SEEDREAM | NB PRO]`) — Higgsfield CLI removido, Runware-only (2026-07-24; proveedor migrado de POYO a Runware 2026-08-06)
 Ratios unificados para ambos providers: **4:5 / 9:16** (default 4:5)
-| Provider | Modelo (POYO) | Resoluciones | Variaciones |
-|---|---|---|---|
-| SEEDREAM | seedream-5.0-pro(-edit) | 1K / 2K | ×1–4 |
-| NB PRO (default) | nano-banana-pro(-edit) | 1K / 2K / 4K | ×1–4 |
+| Provider | Modelo (Runware AIR id) | Resoluciones | Refs max | Variaciones |
+|---|---|---|---|---|
+| SEEDREAM | `bytedance:seedream@5.0-pro` | 1K / 2K | 10 | ×1–4 |
+| NB PRO (default) | `google:4@2` | 1K / 2K / 4K | 14 | ×1–4 |
 
-**POYO límite duro: max 14 imágenes de referencia por request** (`POYO_MAX_REFS`). La app las recorta a 14 con warning en vez de fallar. Para disparos paralelos (variaciones) las refs se suben UNA vez via `upload-poyo-refs` y las URLs se comparten (`imageUrls` en `fire-poyo-image`) — re-subir por tarea reventaba rate limits de POYO.
+Runware no distingue modelo edit vs text-to-image — mismo AIR id, la diferencia es si `inputs.referenceImages` viene poblado. Runware acepta refs como data URI directamente (sin upload previo a una URL), así que `upload-poyo-refs` ahora solo redimensiona/codifica en base64 — el nombre del IPC quedó igual por compat con preload/renderer, ya no sube nada a POYO. Para disparos paralelos (variaciones) las refs se preparan UNA vez via `upload-poyo-refs` y las data URIs se comparten (`imageUrls` en `fire-poyo-image`) — re-codificar por tarea desperdicia trabajo.
 
 ### Model (`[NB2 | RECRAFT]`) — creación de modelos de IA (2026-07-10)
 - El usuario PEGA el prompt manualmente (Claude no lo genera); sin imágenes de referencia
-- Engines: NB2 (POYO nano-banana-2 text→image, 1K/2K/4K) o **Recraft v4.1 Pro** (`recraftv4_1_pro`, siempre 4MP)
-- **Pipeline completo en IPC `fire-model`** (main.ts): asigna SKU → genera full body → dispara automáticamente un **macro face shot** con `nano-banana-2-edit` usando el render recién generado como referencia de identidad (misma cara) y el preset `MACRO_FACE_PROMPT` (gender-neutral, 4:5 · 2K)
+- Engines: NB2 (Runware `google:4@3` text→image, 1K/2K/4K) o **Recraft v4.1 Pro** (`recraftv4_1_pro`, siempre 4MP)
+- **Pipeline completo en IPC `fire-model`** (main.ts): asigna SKU → genera full body → dispara automáticamente un **macro face shot** con Nano Banana 2 (`google:4@3`, referenceImages con el render recién generado) usando el render recién generado como referencia de identidad (misma cara) y el preset `MACRO_FACE_PROMPT` (gender-neutral, 4:5 · 2K)
 - **SKU + carpetas**: `SMF###` (female) / `SMM###` (male) en `/Volumes/Sandisk Home/Brotherhood/IA/Modelos/SMF|SMM/<SKU>/` con `<SKU>.<ext>` + `<SKU>_FACE.<ext>`; numeración auto-incremental escaneando la carpeta + `reservedSkus` (Set) contra carreras de fires paralelos; si la generación principal falla se hace `rmdirSync` del folder vacío
 - Toggle `SMF | SMM` en la barra inferior con auto-detección de género desde el prompt (`detectGender` en App.tsx — "woman" nunca matchea `\bman\b`); el toggle siempre puede overridear
 - Recraft API: `POST https://external.api.recraft.ai/v1/images/generations` (OpenAI-style, Bearer `RECRAFT_API_KEY`), respuesta `{ data: [{ url }] }`; tamaños pro en `RECRAFT_SIZES` (9:16→1536x2688, 4:5→1792x2304, 1:1→2048x2048, 16:9→2688x1536)
 - **NO enviar `style`** — v4.1 Pro lo rechaza (`invalid_image_type`); el default ya es fotorealista
-- La URL del resultado no trae extensión y sirve **WebP** — se descarga a `.download` y se renombra según magic bytes; para subir un WebP como ref a POYO se convierte antes a JPEG con `sips` (`uploadRefToPOYO` — nativeImage no decodifica WebP)
+- La URL del resultado no trae extensión y sirve **WebP** — se descarga a `.download` y se renombra según magic bytes; para usar un WebP como ref se convierte antes a JPEG con `sips` (`refToDataUri` — nativeImage no decodifica WebP)
 - Resultados: cards por SKU en `ModelMode.tsx` con FULL + FACE lado a lado y lightbox — main agrega outputs a `knownLocalPaths` para servirlos via `localfile://`
 - Si el face macro falla, el resultado principal se conserva (success parcial con `error` y placeholder "face macro failed" en la card)
 
-### Video (Seedance 2 / POYO)
+### Video (Seedance 2 / Runware)
 - El usuario escribe el prompt manualmente
-- Frames drag & drop (max 9) → referenciados con `@Image1`, `@Image2`...
-- Modelos: `seedance-2` (PRO) / `seedance-2-fast` (FAST)
-- Ratios: 9:16 / 16:9 / auto | Resoluciones: 720p / 1080p | Duración: 5/10/15s
-- Audio SIEMPRE apagado (`generate_audio: false` hardcoded en fire-video; toggle removido de la UI)
+- Frames drag & drop (max 9) → referenciados con `@Image1`, `@Image2`... → van en `inputs.referenceImages` (no `frameImages`, que en Runware está limitado a 2 y tiene semántica first/last-frame)
+- Modelos (Runware AIR id): `seedance-2` → `bytedance:seedance@2.0` (PRO) / `seedance-2-fast` → `bytedance:seedance@2.0-fast` (FAST)
+- Ratios: 9:16 / 16:9 / auto (con frames, `auto` detecta el ratio del primer frame; sin frames cae a 16:9) | Resoluciones: 720p / 1080p | Duración: 5/10/15s
+- Audio SIEMPRE apagado (`settings: { audio: false }` hardcoded en fire-video; toggle removido de la UI)
 
 ## Claves de entorno (`~/.bmp.env`)
 ```
-POYO_API_KEY=...
+RUNWARE_API_KEY=...
 RECRAFT_API_KEY=...
 ```
-(GEMINI_API_KEY ya no se usa — provider Gemini removido)
+(GEMINI_API_KEY ya no se usa — provider Gemini removido; POYO_API_KEY removida 2026-08-06, migrado a Runware)
 
-## POYO API
+## Runware API (migrado de POYO 2026-08-06)
 ```
-POST /api/generate/submit        → { data: { task_id } }
-GET  /api/generate/status/{id}   → { data: { status, progress, files } }
-POST /api/common/upload/base64   → body: { base64_data, file_name }
+POST https://api.runware.ai/v1     → body: array de tasks, Authorization: Bearer $RUNWARE_API_KEY
+  { taskType: "imageInference" | "videoInference", taskUUID, model, positivePrompt, width, height, inputs?: { referenceImages: [dataURI...] } }
+  { taskType: "getResponse", taskUUID }   → poll para tasks que no resuelven sync
 ```
-Finish states: `finished | completed | succeeded`
+Respuesta trae `data[].imageURL` / `data[].videoURL` cuando termina; `data[].status` (`processing`/`success`/`error`) mientras se resuelve; errores en el array top-level `errors[]`. Refs van embebidas como `data:image/jpeg;base64,...` — no hay endpoint de upload separado. Modelos no tienen variante `-edit`: el mismo AIR id sirve texto→imagen e imagen→imagen, la diferencia es si `inputs.referenceImages` viene poblado. `resolution` (1K/2K/4K) como preset solo funciona con referencia — para texto→imagen se calculan `width`/`height` explícitos por ratio (tablas `NANOBANANA_SIZES`/`SEEDREAM_SIZES`/`VIDEO_SIZES` en main.ts).
 
 ## Shared utilities (main.ts)
-- `uploadFrameToPOYO` — resize 1280px JPEG 90% → POST base64
-- `uploadFilesToPOYO` — parallel uploads, aborta si falla uno (índices críticos)
-- `pollPOYOTask` — 8s wait inicial, 5s interval, log solo en cambio de status
+- `fileToDataUri` / `filesToDataUris` — resize 1280px JPEG 90% → data URI base64 (reemplaza el upload a POYO)
+- `runwareRequest` / `runwareGenerate` — POST del array de tasks; si no resuelve sync, cae a `pollRunwareTask`
+- `pollRunwareTask` — 3s wait inicial, 5s interval via `getResponse`, log solo en cambio de status, timeout 10 min
 
 ## Preload — CRÍTICO
 Debe compilar como **CJS** (`.cjs`). Con `sandbox: true`, ES modules en preload → `window.bmp` undefined.
@@ -90,11 +90,11 @@ preload: join(__dirname, '../preload/preload.cjs')
 
 ## IPC handlers (main.ts)
 - `generate-prompt` — Claude Sonnet 5 visión → prompt
-- `fire-poyo-image` — POYO Seedream 5.0 Pro / Nano Banana Pro (acepta `provider` + `imageUrls` pre-subidas)
-- `fire-model` — pipeline Model completo (SKU + full body + macro face; NB2 o Recraft)
-- `upload-poyo-refs` — sube refs una vez, retorna URLs para fan-out paralelo
-- `fire-video` — POYO Seedance 2
-- `check-higgsfield-auth` — verifica POYO_API_KEY presente
+- `fire-poyo-image` — Runware Seedream 5.0 Pro / Nano Banana Pro (acepta `provider` + `imageUrls` pre-preparadas; nombre del canal quedó igual por compat, ya no habla con POYO)
+- `fire-model` — pipeline Model completo (SKU + full body + macro face; NB2 vía Runware o Recraft)
+- `upload-poyo-refs` — prepara refs como data URI una vez, retorna para fan-out paralelo (nombre legado, ver arriba)
+- `fire-video` — Runware Seedance 2
+- `check-higgsfield-auth` — verifica RUNWARE_API_KEY presente
 - `get-output-path` / `set-output-path` / `open-folder-dialog`
 - `get-memory-stats` / `get-memory-entries` / `mark-prompt-fired`
 

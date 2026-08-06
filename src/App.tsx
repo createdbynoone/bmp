@@ -176,19 +176,18 @@ export default function App() {
     window.bmp?.getMemoryStats?.().then((s: { total: number; fired: number }) => setMemoryStats(s))
   }
 
-  // Fire N prompts in parallel with the active provider (both go through POYO).
-  // Product refs are uploaded ONCE and their URLs shared across tasks —
-  // re-uploading the same images per parallel task bursts POYO's rate limits
-  // (max 14 refs per request)
+  // Fire N prompts in parallel with the active provider (both go through Runware).
+  // Product refs are prepared ONCE and shared across tasks — re-encoding the
+  // same images per parallel task wastes work (max 14 refs per request)
   const fireBatch = async (prompts: string[]): Promise<number> => {
-    let poyoUrls: string[] | undefined
+    let refUrls: string[] | undefined
     if (products.length > 0 && prompts.length > 1) {
       const { urls } = await window.bmp.uploadPoyoRefs({ products })
-      poyoUrls = urls
+      refUrls = urls
     }
     const settled = await Promise.allSettled(
       prompts.map((p) =>
-        window.bmp.firePoyoImage({ prompt: p, products, aspectRatio, resolution, provider, imageUrls: poyoUrls })
+        window.bmp.firePoyoImage({ prompt: p, products, aspectRatio, resolution, provider, imageUrls: refUrls })
       )
     )
     return settled.filter((s) => s.status === 'fulfilled' && s.value.success).length
@@ -504,8 +503,8 @@ export default function App() {
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
           <div className="bg-surface border border-border rounded-xl p-6 w-80 flex flex-col gap-4">
             <div className="flex flex-col gap-1">
-              <span className="font-heading font-bold text-text-primary text-[14.7px] uppercase tracking-widest">POYO Auth</span>
-              <p className="text-[13.7px] text-text-secondary leading-relaxed">Agrega POYO_API_KEY a ~/.bmp.env para continuar.</p>
+              <span className="font-heading font-bold text-text-primary text-[14.7px] uppercase tracking-widest">Runware Auth</span>
+              <p className="text-[13.7px] text-text-secondary leading-relaxed">Agrega RUNWARE_API_KEY a ~/.bmp.env para continuar.</p>
             </div>
             <button onClick={() => setShowLoginModal(false)} className="py-2 rounded-lg bg-white text-black text-[13.7px] font-heading font-semibold uppercase tracking-widest hover:bg-white/90 transition-colors">Listo</button>
           </div>

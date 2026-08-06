@@ -8,7 +8,7 @@ export type ModelGender = 'female' | 'male'
 
 // Image tab (Seedream / Nano Banana Pro) — only 4:5 and 9:16
 const IMAGE_RATIOS = ['4:5', '9:16'] as const
-// Seedream 5.0 Pro on POYO tops out at 2K; Nano Banana Pro goes native 4K
+// Seedream 5.0 Pro on Runware tops out at 2K; Nano Banana Pro goes native 4K
 const SEEDREAM_RESOLUTIONS = ['1k', '2k'] as const
 const NANOBANANA_RESOLUTIONS = ['1k', '2k', '4k'] as const
 

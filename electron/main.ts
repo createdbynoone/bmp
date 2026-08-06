@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync, createWriteStream, renameSync, mkdirSync, 
 import { homedir } from 'os'
 import { execFile, exec } from 'child_process'
 import { promisify } from 'util'
-import { scryptSync, timingSafeEqual } from 'crypto'
+import { scryptSync, timingSafeEqual, randomUUID } from 'crypto'
 import https from 'https'
 import Anthropic from '@anthropic-ai/sdk'
 import electronUpdater from 'electron-updater'
@@ -19,7 +19,7 @@ app.disableHardwareAcceleration()
 // Chromium's own background services (Safe Browsing pings, component/variations
 // updates, media session discovery) — irrelevant to a local tool, not used by
 // any app feature, safe to strip. Does not touch our own fetch() calls to
-// Anthropic/POYO, which the main process makes directly on demand.
+// Anthropic/Runware, which the main process makes directly on demand.
 app.commandLine.appendSwitch('disable-background-networking')
 app.commandLine.appendSwitch('disable-features', 'MediaRouter,OptimizationGuideModelDownloading,Translate')
 
@@ -100,7 +100,7 @@ function requireUnlocked(): void {
 
 // Every handler below requires the passphrase to have been entered once on
 // this machine — without this, a renderer that skips the LockScreen UI
-// (e.g. via devtools) still can't reach the filesystem or the Anthropic/POYO keys.
+// (e.g. via devtools) still can't reach the filesystem or the Anthropic/Runware keys.
 function handleWhenUnlocked<Args extends unknown[], R>(
   channel: string,
   fn: (event: Electron.IpcMainInvokeEvent, ...args: Args) => R,
@@ -484,11 +484,11 @@ handleWhenUnlocked('get-memory-entries', () => {
 })
 
 handleWhenUnlocked('check-higgsfield-auth', async () => {
-  return { authenticated: !!process.env.POYO_API_KEY }
+  return { authenticated: !!process.env.RUNWARE_API_KEY }
 })
 
 handleWhenUnlocked('higgsfield-login', async () => {
-  return { ok: false, error: 'Add POYO_API_KEY to ~/.bmp.env' }
+  return { ok: false, error: 'Add RUNWARE_API_KEY to ~/.bmp.env' }
 })
 
 function downloadFile(url: string, destPath: string): Promise<void> {
@@ -549,115 +549,139 @@ handleWhenUnlocked('get-higgsfield-credits', async () => {
   return { credits: null, plan: 'nano-banana-2' }
 })
 
-// ── POYO.ai shared utilities ───────────────────────────────────────────────────
+// ── Runware shared utilities ────────────────────────────────────────────────
 
 const MAX_FRAME_PX = 1280
+const RUNWARE_API_URL = 'https://api.runware.ai/v1'
 
-async function uploadFrameToPOYO(filePath: string, apiKey: string, index: number): Promise<string> {
-  // Resize frame before upload to reduce payload size
-  let b64: string
-  try {
-    const img = nativeImage.createFromPath(filePath)
-    if (!img.isEmpty()) {
-      const { width, height } = img.getSize()
-      const scale = Math.min(1, MAX_FRAME_PX / Math.max(width, height))
-      const resized = scale < 1
-        ? img.resize({ width: Math.round(width * scale), height: Math.round(height * scale), quality: 'best' })
-        : img
-      b64 = resized.toJPEG(90).toString('base64')
-    } else {
-      b64 = readFileSync(filePath).toString('base64')
-    }
-  } catch {
-    b64 = readFileSync(filePath).toString('base64')
-  }
+function runwareTaskUUID(): string {
+  return randomUUID()
+}
 
-  const fileName = `frame_${index + 1}_${Date.now()}.jpg`
-  const res = await fetch('https://api.poyo.ai/api/common/upload/base64', {
+async function runwareRequest(
+  tasks: Record<string, unknown>[], apiKey: string,
+): Promise<{ data: Array<Record<string, unknown>>; errors: Array<{ message?: string }> }> {
+  const res = await fetch(RUNWARE_API_URL, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ base64_data: b64, file_name: fileName }),
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(tasks),
   })
-  const data = await res.json() as { success?: boolean; data?: { file_url: string }; error?: { message: string } }
-  if (!data.success || !data.data?.file_url) throw new Error(data.error?.message ?? 'Upload failed')
-  return data.data.file_url
+  const json = await res.json() as { data?: Array<Record<string, unknown>>; errors?: Array<{ message?: string }> }
+  const errors = json.errors ?? []
+  if (!res.ok && errors.length === 0) throw new Error(`HTTP ${res.status}`)
+  return { data: json.data ?? [], errors }
 }
 
-// Upload multiple files in parallel, preserving order (critical for @Image index alignment)
-async function uploadFilesToPOYO(filePaths: string[], apiKey: string, sendProgress: (l: string) => void): Promise<string[]> {
-  if (filePaths.length === 0) return []
-  sendProgress(`Uploading ${filePaths.length} image${filePaths.length > 1 ? 's' : ''} to POYO...`)
-  const results = await Promise.allSettled(filePaths.map((f, i) => uploadFrameToPOYO(f, apiKey, i)))
-  const failures = results.filter((r) => r.status === 'rejected')
-  if (failures.length > 0) {
-    const err = (failures[0] as PromiseRejectedResult).reason
-    throw new Error(`Upload failed: ${err instanceof Error ? err.message : String(err)}`)
-  }
-  sendProgress(`${filePaths.length} image${filePaths.length > 1 ? 's' : ''} uploaded ✓`)
-  return results.map((r) => (r as PromiseFulfilledResult<string>).value)
-}
-
-// Shared POYO task poller
-async function pollPOYOTask(
-  taskId: string, apiKey: string,
-  sendProgress: (l: string) => void
-): Promise<Array<{ file_url: string; file_type: string }>> {
-  await new Promise((r) => setTimeout(r, 8000))
+// Poll a Runware task via getResponse until it resolves to a final result
+async function pollRunwareTask(
+  taskUUID: string, apiKey: string, sendProgress: (l: string) => void,
+): Promise<Record<string, unknown>> {
   let lastStatus = ''; let lastPct = -1
   const startTs = Date.now()
   for (let i = 0; i < 120; i++) {
-    const res = await fetch(`https://api.poyo.ai/api/generate/status/${taskId}`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    })
-    const d = await res.json() as { data?: { status: string; progress?: number; files?: Array<{ file_url: string; file_type: string }>; error_message?: string }; error?: { message: string } }
-    const task = d.data
-    if (!task) { sendProgress(`Poll error: ${d.error?.message ?? 'no data'}`); await new Promise((r) => setTimeout(r, 5000)); continue }
-    const pct = task.progress ?? 0
+    await new Promise((r) => setTimeout(r, i === 0 ? 3000 : 5000))
+    const { data, errors } = await runwareRequest([{ taskType: 'getResponse', taskUUID }], apiKey)
+    if (errors.length > 0) throw new Error(errors[0].message ?? 'Runware error')
+    const task = data[0]
+    if (!task) continue
+    const status = String(task.status ?? '')
+    const pct = Number(task.progress ?? 0)
     const elapsed = Math.round((Date.now() - startTs) / 1000)
-    if (task.status !== lastStatus || pct !== lastPct) {
-      sendProgress(`${task.status}${pct > 0 ? ` ${pct}%` : ''} · ${elapsed}s`)
-      lastStatus = task.status; lastPct = pct
+    if (status !== lastStatus || pct !== lastPct) {
+      sendProgress(`${status || 'processing'}${pct > 0 ? ` ${pct}%` : ''} · ${elapsed}s`)
+      lastStatus = status; lastPct = pct
     }
-    if (['finished', 'completed', 'succeeded'].includes(task.status)) return task.files ?? []
-    if (['failed', 'error'].includes(task.status)) {
-      throw new Error(task.error_message ? `POYO: ${task.error_message}` : `Generation ${task.status}`)
-    }
-    await new Promise((r) => setTimeout(r, 5000))
+    if (task.imageURL || task.videoURL || status === 'success') return task
+    if (status === 'error') throw new Error('Runware: generation failed')
   }
   throw new Error('Timeout — task exceeded 10 minutes')
 }
 
-// ── POYO.ai image generation — Seedream 5.0 Pro / Nano Banana Pro ──────────────
+// Submit a Runware task; return immediately if it resolves synchronously,
+// otherwise poll getResponse until the final result is ready
+async function runwareGenerate(
+  task: Record<string, unknown>, apiKey: string, sendProgress: (l: string) => void,
+): Promise<Record<string, unknown>> {
+  const { data, errors } = await runwareRequest([task], apiKey)
+  if (errors.length > 0) throw new Error(errors[0].message ?? 'Runware error')
+  const result = data[0]
+  if (!result) throw new Error('Empty Runware response')
+  if (result.imageURL || result.videoURL) return result
+  return pollRunwareTask(task.taskUUID as string, apiKey, sendProgress)
+}
+
+// Resize + base64-encode a local file into a data: URI for Runware referenceImages/frameImages
+async function fileToDataUri(filePath: string, maxPx: number): Promise<string> {
+  try {
+    const img = nativeImage.createFromPath(filePath)
+    if (!img.isEmpty()) {
+      const { width, height } = img.getSize()
+      const scale = Math.min(1, maxPx / Math.max(width, height))
+      const resized = scale < 1
+        ? img.resize({ width: Math.round(width * scale), height: Math.round(height * scale), quality: 'best' })
+        : img
+      return `data:image/jpeg;base64,${resized.toJPEG(90).toString('base64')}`
+    }
+  } catch {}
+  const raw = readFileSync(filePath)
+  const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
+  const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif' : 'image/jpeg'
+  return `data:${mime};base64,${raw.toString('base64')}`
+}
+
+// Prepare multiple files in parallel, preserving order (critical for @Image index alignment)
+async function filesToDataUris(filePaths: string[], maxPx: number, sendProgress: (l: string) => void): Promise<string[]> {
+  if (filePaths.length === 0) return []
+  sendProgress(`Preparing ${filePaths.length} image${filePaths.length > 1 ? 's' : ''}...`)
+  const uris = await Promise.all(filePaths.map((f) => fileToDataUri(f, maxPx)))
+  sendProgress(`${filePaths.length} image${filePaths.length > 1 ? 's' : ''} ready ✓`)
+  return uris
+}
+
+// ── Runware image generation — Seedream 5.0 Pro / Nano Banana Pro ──────────────
 
 const IMAGE_RATIOS = ['4:5', '9:16'] as const
 // Model tab (fire-model, NB2/Recraft) keeps the full ratio set — unaffected by
 // the Image tab's 4:5/9:16-only restriction above
 const MODEL_RATIOS = ['9:16', '4:5', '1:1', '16:9'] as const
-const POYO_MAX_REFS = 14 // POYO hard limit: 14 reference images per request
+const RUNWARE_MAX_REFS = 14 // shared upload-refs cap; per-provider cap enforced below
 
-// Per-provider model slugs and resolution ceiling — Seedream 5.0 Pro on POYO
-// only exposes 1K/2K, Nano Banana Pro goes up to native 4K
+// Explicit pixel dimensions per aspect ratio + resolution tier. Runware's
+// "resolution" preset only auto-derives aspect ratio from a reference image,
+// so text-to-image (no refs) needs literal width/height — using explicit
+// sizes everywhere keeps both paths consistent.
+const NANOBANANA_SIZES: Record<string, Record<string, [number, number]>> = {
+  '1:1':  { '1k': [1024, 1024], '2k': [2048, 2048], '4k': [4096, 4096] },
+  '4:5':  { '1k': [896, 1120],  '2k': [1792, 2240], '4k': [3584, 4480] },
+  '9:16': { '1k': [768, 1360],  '2k': [1536, 2720], '4k': [3072, 5440] },
+  '16:9': { '1k': [1360, 768],  '2k': [2720, 1536], '4k': [5440, 3072] },
+}
+const SEEDREAM_SIZES: Record<string, Record<string, [number, number]>> = {
+  '4:5':  { '1k': [896, 1120], '2k': [1792, 2240] },
+  '9:16': { '1k': [768, 1360], '2k': [1536, 2720] },
+}
+
+// Per-provider AIR model id, resolution ceiling and reference-image cap —
+// Seedream 5.0 Pro on Runware only exposes 1K/2K and 10 refs, Nano Banana Pro
+// goes up to native 4K with 14 refs
 const IMAGE_PROVIDERS = {
-  seedream: { model: 'seedream-5.0-pro', editModel: 'seedream-5.0-pro-edit', resolutions: ['1k', '2k'] },
-  nanobanana: { model: 'nano-banana-pro', editModel: 'nano-banana-pro-edit', resolutions: ['1k', '2k', '4k'] },
+  seedream: { model: 'bytedance:seedream@5.0-pro', resolutions: ['1k', '2k'], sizes: SEEDREAM_SIZES, maxRefs: 10 },
+  nanobanana: { model: 'google:4@2', resolutions: ['1k', '2k', '4k'], sizes: NANOBANANA_SIZES, maxRefs: 14 },
 } as const
 type ImageProvider = keyof typeof IMAGE_PROVIDERS
 
-// Upload product refs once and return their POYO URLs — used to fan out multiple
-// generations (variations) without re-uploading the same images per task
+// Prepare product refs once as data URIs — used to fan out multiple
+// generations (variations) without re-encoding the same images per task
 handleWhenUnlocked('upload-poyo-refs', async (event, { products }: { products: string[] }) => {
   if (!Array.isArray(products)) throw new Error('Invalid products')
 
-  const apiKey = process.env.POYO_API_KEY
-  if (!apiKey) throw new Error('POYO_API_KEY not set — add it to ~/.bmp.env')
-
   const sendProgress = (line: string) => event.sender.send('higgsfield-progress', { scope: 'image', line })
   let files = products
-  if (files.length > POYO_MAX_REFS) {
-    sendProgress(`POYO accepts max ${POYO_MAX_REFS} reference images — using the first ${POYO_MAX_REFS}`)
-    files = files.slice(0, POYO_MAX_REFS)
+  if (files.length > RUNWARE_MAX_REFS) {
+    sendProgress(`Runware accepts max ${RUNWARE_MAX_REFS} reference images — using the first ${RUNWARE_MAX_REFS}`)
+    files = files.slice(0, RUNWARE_MAX_REFS)
   }
-  const urls = await uploadFilesToPOYO(files, apiKey, sendProgress)
+  const urls = await filesToDataUris(files, MAX_FRAME_PX, sendProgress)
   return { urls }
 })
 
@@ -668,8 +692,8 @@ handleWhenUnlocked('fire-poyo-image', async (event, { prompt, products, aspectRa
   if (!Array.isArray(products)) throw new Error('Invalid products')
   if (presetUrls !== undefined && (!Array.isArray(presetUrls) || presetUrls.some((u) => typeof u !== 'string'))) throw new Error('Invalid imageUrls')
 
-  const apiKey = process.env.POYO_API_KEY
-  if (!apiKey) throw new Error('POYO_API_KEY not set — add it to ~/.bmp.env')
+  const apiKey = process.env.RUNWARE_API_KEY
+  if (!apiKey) throw new Error('RUNWARE_API_KEY not set — add it to ~/.bmp.env')
 
   const providerKey: ImageProvider = provider === 'seedream' ? 'seedream' : 'nanobanana'
   const providerCfg = IMAGE_PROVIDERS[providerKey]
@@ -679,54 +703,42 @@ handleWhenUnlocked('fire-poyo-image', async (event, { prompt, products, aspectRa
   const sendProgress = (line: string) => event.sender.send('higgsfield-progress', { scope: 'image', line })
   const safeSize = IMAGE_RATIOS.includes(aspectRatio as typeof IMAGE_RATIOS[number]) ? aspectRatio : '4:5'
   const allowedResolutions: readonly string[] = providerCfg.resolutions
-  const safeRes = (allowedResolutions.includes(resolution) ? resolution : allowedResolutions[allowedResolutions.length - 1]).toUpperCase()
+  const safeRes = (allowedResolutions.includes(resolution) ? resolution : allowedResolutions[allowedResolutions.length - 1]).toLowerCase()
+  const [width, height] = providerCfg.sizes[safeSize][safeRes]
 
-  // Use pre-uploaded reference URLs when provided; otherwise upload now (max 14)
-  let imageUrls: string[] = (presetUrls ?? []).slice(0, POYO_MAX_REFS)
-  if (imageUrls.length === 0 && products.length > 0) {
+  // Use pre-prepared reference data URIs when provided; otherwise prepare now (max per-provider cap)
+  let imageUris: string[] = (presetUrls ?? []).slice(0, providerCfg.maxRefs)
+  if (imageUris.length === 0 && products.length > 0) {
     let files = products
-    if (files.length > POYO_MAX_REFS) {
-      sendProgress(`POYO accepts max ${POYO_MAX_REFS} reference images — using the first ${POYO_MAX_REFS}`)
-      files = files.slice(0, POYO_MAX_REFS)
+    if (files.length > providerCfg.maxRefs) {
+      sendProgress(`${providerKey === 'seedream' ? 'Seedream' : 'Nano Banana Pro'} accepts max ${providerCfg.maxRefs} reference images — using the first ${providerCfg.maxRefs}`)
+      files = files.slice(0, providerCfg.maxRefs)
     }
     try {
-      imageUrls = await uploadFilesToPOYO(files, apiKey, sendProgress)
+      imageUris = await filesToDataUris(files, MAX_FRAME_PX, sendProgress)
     } catch (err) {
       sendProgress(err instanceof Error ? err.message : String(err))
       return { success: false, outputPath: '', error: String(err) }
     }
   }
 
-  // Use edit model when product images provided (better adherence to reference)
-  const model = imageUrls.length > 0 ? providerCfg.editModel : providerCfg.model
-  const input: Record<string, unknown> = { prompt, size: safeSize, resolution: safeRes }
-  if (imageUrls.length > 0) input.image_urls = imageUrls
+  sendProgress(`Submitting ${providerCfg.model} (${safeSize} · ${safeRes.toUpperCase()})...`)
 
-  sendProgress(`Submitting ${model} (${safeSize} · ${safeRes})...`)
-
-  const submitRes = await fetch('https://api.poyo.ai/api/generate/submit', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, input }),
-  })
-  const submitData = await submitRes.json() as { code?: number; data?: { task_id: string }; error?: { message: string } }
-  if (!submitRes.ok || !submitData.data?.task_id) {
-    const msg = submitData.error?.message ?? `HTTP ${submitRes.status}`
-    sendProgress(`Submit error: ${msg}`)
-    return { success: false, outputPath: '', error: msg }
+  const task: Record<string, unknown> = {
+    taskType: 'imageInference', taskUUID: runwareTaskUUID(), model: providerCfg.model,
+    positivePrompt: prompt, width, height,
   }
-
-  sendProgress(`Generating... (${submitData.data.task_id})`)
+  if (imageUris.length > 0) task.inputs = { referenceImages: imageUris }
 
   try {
-    const files = await pollPOYOTask(submitData.data.task_id, apiKey, sendProgress)
-    const imgFile = files.find((f) => f.file_type === 'image' || f.file_url.match(/\.(jpg|jpeg|png|webp)/i))
-    if (!imgFile) { sendProgress('No image in response'); return { success: false, outputPath: '', error: 'No image file' } }
-    const ext = imgFile.file_url.split('.').pop()?.split('?')[0] ?? 'jpg'
+    const result = await runwareGenerate(task, apiKey, sendProgress)
+    const url = result.imageURL as string | undefined
+    if (!url) { sendProgress('No image in response'); return { success: false, outputPath: '', error: 'No image file' } }
+    const ext = url.split('.').pop()?.split('?')[0] ?? 'jpg'
     const outputName = `bmp_${timestamp}.${ext}`
     const outputPath = join(desktopPath, outputName)
     sendProgress('Downloading image...')
-    await downloadFile(imgFile.file_url, outputPath)
+    await downloadFile(url, outputPath)
     knownLocalPaths.add(outputPath) // allow the renderer to preview the result
     try {
       const { stdout } = await execFileAsync('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', outputPath])
@@ -836,43 +848,37 @@ async function recraftGenerateToFile(prompt: string, aspectRatio: string, destDi
   return outputPath
 }
 
-// Submit a POYO generation, poll it, and save the image as destDir/baseName.<ext>. Throws on failure.
-async function poyoGenerateToFile(opts: {
-  model: string; input: Record<string, unknown>; apiKey: string
-  destDir: string; baseName: string; sendProgress: (l: string) => void
+// Submit a Runware generation, resolve it, and save the image as destDir/baseName.<ext>. Throws on failure.
+async function runwareGenerateToFile(opts: {
+  model: string; prompt: string; width: number; height: number; referenceImages?: string[]
+  apiKey: string; destDir: string; baseName: string; sendProgress: (l: string) => void
 }): Promise<string> {
-  const { model, input, apiKey, destDir, baseName, sendProgress } = opts
-  const submitRes = await fetch('https://api.poyo.ai/api/generate/submit', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, input }),
-  })
-  const submitData = await submitRes.json() as { data?: { task_id: string }; error?: { message: string } }
-  if (!submitRes.ok || !submitData.data?.task_id) {
-    throw new Error(submitData.error?.message ?? `HTTP ${submitRes.status}`)
+  const { model, prompt, width, height, referenceImages, apiKey, destDir, baseName, sendProgress } = opts
+  const task: Record<string, unknown> = {
+    taskType: 'imageInference', taskUUID: runwareTaskUUID(), model, positivePrompt: prompt, width, height,
   }
-  sendProgress(`Generating... (${submitData.data.task_id})`)
+  if (referenceImages && referenceImages.length > 0) task.inputs = { referenceImages }
 
-  const files = await pollPOYOTask(submitData.data.task_id, apiKey, sendProgress)
-  const imgFile = files.find((f) => f.file_type === 'image' || f.file_url.match(/\.(jpg|jpeg|png|webp)/i))
-  if (!imgFile) throw new Error('No image file in response')
-  const urlExt = imgFile.file_url.split('.').pop()?.split('?')[0]?.toLowerCase()
+  const result = await runwareGenerate(task, apiKey, sendProgress)
+  const url = result.imageURL as string | undefined
+  if (!url) throw new Error('No image file in response')
+  const urlExt = url.split('.').pop()?.split('?')[0]?.toLowerCase()
   const ext = urlExt && urlExt.length <= 4 ? urlExt : 'jpg'
   const outputPath = join(destDir, `${baseName}.${ext}`)
   sendProgress('Downloading image...')
-  await downloadFile(imgFile.file_url, outputPath)
+  await downloadFile(url, outputPath)
   knownLocalPaths.add(outputPath)
   await sendSavedLine(outputPath, sendProgress)
   return outputPath
 }
 
-// nativeImage can't decode WebP for the POYO reference upload — convert via sips first
-async function uploadRefToPOYO(path: string, apiKey: string): Promise<string> {
-  if (!path.toLowerCase().endsWith('.webp')) return uploadFrameToPOYO(path, apiKey, 0)
+// nativeImage can't decode WebP for encoding — convert via sips first
+async function refToDataUri(path: string): Promise<string> {
+  if (!path.toLowerCase().endsWith('.webp')) return fileToDataUri(path, MAX_FRAME_PX)
   const tmp = path.replace(/\.webp$/i, '_ref.jpg')
   await execFileAsync('sips', ['-s', 'format', 'jpeg', '-s', 'formatOptions', '90', path, '--out', tmp])
   try {
-    return await uploadFrameToPOYO(tmp, apiKey, 0)
+    return await fileToDataUri(tmp, MAX_FRAME_PX)
   } finally {
     try { unlinkSync(tmp) } catch {}
   }
@@ -887,8 +893,8 @@ handleWhenUnlocked('fire-model', async (event, { prompt, engine, aspectRatio, re
   const safeGender = gender === 'male' ? 'male' as const : 'female' as const
   const safeEngine = engine === 'recraft' ? 'recraft' : 'nb2'
   const safeSize = MODEL_RATIOS.includes(aspectRatio as typeof MODEL_RATIOS[number]) ? aspectRatio : '4:5'
-  const safeRes = ['1k', '2k', '4k'].includes(resolution) ? resolution.toUpperCase() : '2K'
-  const poyoKey = process.env.POYO_API_KEY
+  const safeRes = ['1k', '2k', '4k'].includes(resolution) ? resolution : '2k'
+  const runwareKey = process.env.RUNWARE_API_KEY
 
   // 1 — allocate the next SKU folder (SMF### female / SMM### male)
   let sku: string; let dir: string
@@ -908,11 +914,12 @@ handleWhenUnlocked('fire-model', async (event, { prompt, engine, aspectRatio, re
       if (safeEngine === 'recraft') {
         fullPath = await recraftGenerateToFile(prompt, safeSize, dir, sku, sendProgress)
       } else {
-        if (!poyoKey) throw new Error('POYO_API_KEY not set — add it to ~/.bmp.env')
-        sendProgress(`Submitting Nano Banana 2 (${safeSize} · ${safeRes})...`)
-        fullPath = await poyoGenerateToFile({
-          model: 'nano-banana-2', input: { prompt, size: safeSize, resolution: safeRes },
-          apiKey: poyoKey, destDir: dir, baseName: sku, sendProgress,
+        if (!runwareKey) throw new Error('RUNWARE_API_KEY not set — add it to ~/.bmp.env')
+        sendProgress(`Submitting Nano Banana 2 (${safeSize} · ${safeRes.toUpperCase()})...`)
+        const [w, h] = NANOBANANA_SIZES[safeSize][safeRes]
+        fullPath = await runwareGenerateToFile({
+          model: 'google:4@3', prompt, width: w, height: h,
+          apiKey: runwareKey, destDir: dir, baseName: sku, sendProgress,
         })
       }
     } catch (err) {
@@ -926,17 +933,17 @@ handleWhenUnlocked('fire-model', async (event, { prompt, engine, aspectRatio, re
     // as identity reference, so the close-up is the SAME person
     let facePath = ''
     let faceError: string | undefined
-    if (!poyoKey) {
-      faceError = 'POYO_API_KEY not set — face macro skipped'
+    if (!runwareKey) {
+      faceError = 'RUNWARE_API_KEY not set — face macro skipped'
       sendProgress(faceError)
     } else {
       try {
-        sendProgress('▶ Macro face shot — uploading reference...')
-        const refUrl = await uploadRefToPOYO(fullPath, poyoKey)
-        facePath = await poyoGenerateToFile({
-          model: 'nano-banana-2-edit',
-          input: { prompt: MACRO_FACE_PROMPT, size: '4:5', resolution: '2K', image_urls: [refUrl] },
-          apiKey: poyoKey, destDir: dir, baseName: `${sku}_FACE`, sendProgress,
+        sendProgress('▶ Macro face shot — preparing reference...')
+        const refUri = await refToDataUri(fullPath)
+        const [fw, fh] = NANOBANANA_SIZES['4:5']['2k']
+        facePath = await runwareGenerateToFile({
+          model: 'google:4@3', prompt: MACRO_FACE_PROMPT, width: fw, height: fh, referenceImages: [refUri],
+          apiKey: runwareKey, destDir: dir, baseName: `${sku}_FACE`, sendProgress,
         })
       } catch (err) {
         faceError = err instanceof Error ? err.message : String(err)
@@ -951,14 +958,25 @@ handleWhenUnlocked('fire-model', async (event, { prompt, engine, aspectRatio, re
   }
 })
 
+// Seedance video AIR ids + explicit pixel sizes per aspect ratio/resolution —
+// same reasoning as the image size tables above
+const VIDEO_MODELS: Record<string, string> = {
+  'seedance-2': 'bytedance:seedance@2.0',
+  'seedance-2-fast': 'bytedance:seedance@2.0-fast',
+}
+const VIDEO_SIZES: Record<string, Record<string, [number, number]>> = {
+  '16:9': { '720p': [1280, 720], '1080p': [1920, 1080] },
+  '9:16': { '720p': [720, 1280], '1080p': [1080, 1920] },
+}
+
 handleWhenUnlocked('fire-video', async (event, { prompt, products: frames, videoModel, aspectRatio, resolution, duration }: {
   prompt: string; products: string[]; videoModel: string; aspectRatio: string; resolution: string; duration: number
 }) => {
   if (typeof prompt !== 'string' || prompt.trim().length === 0) throw new Error('Invalid prompt')
   if (!Array.isArray(frames) || frames.length > 9) throw new Error('Invalid frames')
 
-  const apiKey = process.env.POYO_API_KEY
-  if (!apiKey) throw new Error('POYO_API_KEY not set — add it to ~/.bmp.env')
+  const apiKey = process.env.RUNWARE_API_KEY
+  if (!apiKey) throw new Error('RUNWARE_API_KEY not set — add it to ~/.bmp.env')
 
   const timestamp = Date.now()
   const desktopPath = loadPrefs().outputPath
@@ -971,11 +989,11 @@ handleWhenUnlocked('fire-video', async (event, { prompt, products: frames, video
     sendProgress(`Warning: prompt references @Image${maxTag} but only ${frames.length} frame${frames.length !== 1 ? 's' : ''} provided`)
   }
 
-  // Upload frames in parallel — order is critical (@Image1 = frames[0])
-  let referenceImageUrls: string[] = []
+  // Prepare frames in parallel — order is critical (@Image1 = frames[0])
+  let referenceImages: string[] = []
   if (frames.length > 0) {
     try {
-      referenceImageUrls = await uploadFilesToPOYO(frames, apiKey, sendProgress)
+      referenceImages = await filesToDataUris(frames, MAX_FRAME_PX, sendProgress)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       sendProgress(msg)
@@ -983,44 +1001,38 @@ handleWhenUnlocked('fire-video', async (event, { prompt, products: frames, video
     }
   }
 
-  // Build request input
-  // Audio siempre apagado — decisión de producto 2026-07-03
-  const input: Record<string, unknown> = {
-    prompt,
-    resolution,
-    duration,
-    generate_audio: false,
+  const safeRes = ['720p', '1080p'].includes(resolution) ? resolution : '720p'
+  let vidRatio: '16:9' | '9:16' = aspectRatio === '9:16' ? '9:16' : '16:9'
+  if (aspectRatio === 'auto' && frames.length > 0) {
+    try {
+      const img = nativeImage.createFromPath(frames[0])
+      if (!img.isEmpty()) {
+        const { width, height } = img.getSize()
+        vidRatio = width >= height ? '16:9' : '9:16'
+      }
+    } catch {}
   }
-  if (aspectRatio !== 'auto') input.aspect_ratio = aspectRatio
-  if (referenceImageUrls.length > 0) input.reference_image_urls = referenceImageUrls
+  const [vw, vh] = VIDEO_SIZES[vidRatio][safeRes]
+  const model = VIDEO_MODELS[videoModel] ?? VIDEO_MODELS['seedance-2']
+
+  // Build request task — audio siempre apagado (decisión de producto 2026-07-03)
+  const task: Record<string, unknown> = {
+    taskType: 'videoInference', taskUUID: runwareTaskUUID(), model,
+    positivePrompt: prompt, width: vw, height: vh, duration,
+    settings: { audio: false },
+  }
+  if (referenceImages.length > 0) task.inputs = { referenceImages }
 
   sendProgress(`Submitting to Seedance 2 (${aspectRatio} · ${resolution} · ${duration}s)...`)
 
-  // Submit task
-  const submitRes = await fetch('https://api.poyo.ai/api/generate/submit', {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: videoModel, input }),
-  })
-  const submitData = await submitRes.json() as { code?: number; data?: { task_id: string; status: string }; error?: { message: string } }
-
-  if (!submitRes.ok || !submitData.data?.task_id) {
-    const msg = submitData.error?.message ?? `HTTP ${submitRes.status}`
-    sendProgress(`Submit error: ${msg}`)
-    return { success: false, outputPath: '', error: msg }
-  }
-
-  const taskId = submitData.data.task_id
-  sendProgress(`Generating... (task: ${taskId})`)
-
   try {
-    const files = await pollPOYOTask(taskId, apiKey, sendProgress)
-    const videoFile = files.find((f) => f.file_type === 'video' || f.file_url.match(/\.mp4|\.mov/i))
-    if (!videoFile) { sendProgress('No video file in response'); return { success: false, outputPath: '', error: 'No video file' } }
+    const result = await runwareGenerate(task, apiKey, sendProgress)
+    const videoUrl = result.videoURL as string | undefined
+    if (!videoUrl) { sendProgress('No video file in response'); return { success: false, outputPath: '', error: 'No video file' } }
     const outputName = `bmp_video_${timestamp}.mp4`
     const outputPath = join(desktopPath, outputName)
     sendProgress('Downloading video...')
-    await downloadFile(videoFile.file_url, outputPath)
+    await downloadFile(videoUrl, outputPath)
     sendProgress(`Saved: ${outputName}`)
     return { success: true, outputPath }
   } catch (err) {
