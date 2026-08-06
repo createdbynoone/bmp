@@ -67,6 +67,8 @@ POST https://api.runware.ai/v1     → body: array de tasks, Authorization: Bear
 ```
 Respuesta trae `data[].imageURL` / `data[].videoURL` cuando termina; `data[].status` (`processing`/`success`/`error`) mientras se resuelve; errores en el array top-level `errors[]`. Refs van embebidas como `data:image/jpeg;base64,...` — no hay endpoint de upload separado. Modelos no tienen variante `-edit`: el mismo AIR id sirve texto→imagen e imagen→imagen, la diferencia es si `inputs.referenceImages` viene poblado. `resolution` (1K/2K/4K) como preset solo funciona con referencia — para texto→imagen se calculan `width`/`height` explícitos por ratio (tablas `NANOBANANA_SIZES`/`SEEDREAM_SIZES`/`VIDEO_SIZES` en main.ts).
 
+**Nano Banana Pro/2 (`google:4@2`/`google:4@3`) solo aceptan una whitelist fija de pares width×height** — dimensiones arbitrarias (aunque respeten el aspect ratio) tiran `"Unsupported use of width/height parameters"` con la lista completa en el mensaje de error. `NANOBANANA_SIZES` usa los valores exactos de esa whitelist (v1.9.1, 2026-08-06, bug real en producción: los valores calculados a mano — 1792×2240 para 4:5 2K — no estaban en la lista, la real es 1856×2304). Seedream 5.0 Pro sí acepta dimensiones custom dentro de su rango de píxeles totales, no tiene esta restricción.
+
 ## Shared utilities (main.ts)
 - `fileToDataUri` / `filesToDataUris` — resize 1280px JPEG 90% → data URI base64 (reemplaza el upload a POYO)
 - `runwareRequest` / `runwareGenerate` — POST del array de tasks; si no resuelve sync, cae a `pollRunwareTask`

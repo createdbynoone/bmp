@@ -650,11 +650,14 @@ const RUNWARE_MAX_REFS = 14 // shared upload-refs cap; per-provider cap enforced
 // "resolution" preset only auto-derives aspect ratio from a reference image,
 // so text-to-image (no refs) needs literal width/height — using explicit
 // sizes everywhere keeps both paths consistent.
+// Nano Banana Pro/2 only accept an enumerated whitelist of width×height pairs
+// per aspect ratio (arbitrary dimensions error with "Unsupported use of
+// width/height parameters") — these are the exact values from that whitelist.
 const NANOBANANA_SIZES: Record<string, Record<string, [number, number]>> = {
   '1:1':  { '1k': [1024, 1024], '2k': [2048, 2048], '4k': [4096, 4096] },
-  '4:5':  { '1k': [896, 1120],  '2k': [1792, 2240], '4k': [3584, 4480] },
-  '9:16': { '1k': [768, 1360],  '2k': [1536, 2720], '4k': [3072, 5440] },
-  '16:9': { '1k': [1360, 768],  '2k': [2720, 1536], '4k': [5440, 3072] },
+  '4:5':  { '1k': [928, 1152],  '2k': [1856, 2304], '4k': [3712, 4608] },
+  '9:16': { '1k': [768, 1376],  '2k': [1536, 2752], '4k': [3072, 5504] },
+  '16:9': { '1k': [1376, 768],  '2k': [2752, 1536], '4k': [5504, 3072] },
 }
 const SEEDREAM_SIZES: Record<string, Record<string, [number, number]>> = {
   '4:5':  { '1k': [896, 1120], '2k': [1792, 2240] },

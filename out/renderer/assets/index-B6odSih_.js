@@ -7949,14 +7949,14 @@ function App() {
     window.bmp?.getMemoryStats?.().then((s) => setMemoryStats(s));
   };
   const fireBatch = async (prompts) => {
-    let poyoUrls;
+    let refUrls;
     if (products.length > 0 && prompts.length > 1) {
       const { urls } = await window.bmp.uploadPoyoRefs({ products });
-      poyoUrls = urls;
+      refUrls = urls;
     }
     const settled = await Promise.allSettled(
       prompts.map(
-        (p) => window.bmp.firePoyoImage({ prompt: p, products, aspectRatio, resolution, provider, imageUrls: poyoUrls })
+        (p) => window.bmp.firePoyoImage({ prompt: p, products, aspectRatio, resolution, provider, imageUrls: refUrls })
       )
     );
     return settled.filter((s) => s.status === "fulfilled" && s.value.success).length;
@@ -8257,8 +8257,8 @@ function App() {
     ),
     showLoginModal && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "fixed inset-0 bg-black/70 flex items-center justify-center z-50", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "bg-surface border border-border rounded-xl p-6 w-80 flex flex-col gap-4", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col gap-1", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "font-heading font-bold text-text-primary text-[14.7px] uppercase tracking-widest", children: "POYO Auth" }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-[13.7px] text-text-secondary leading-relaxed", children: "Agrega POYO_API_KEY a ~/.bmp.env para continuar." })
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "font-heading font-bold text-text-primary text-[14.7px] uppercase tracking-widest", children: "Runware Auth" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-[13.7px] text-text-secondary leading-relaxed", children: "Agrega RUNWARE_API_KEY a ~/.bmp.env para continuar." })
       ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsx("button", { onClick: () => setShowLoginModal(false), className: "py-2 rounded-lg bg-white text-black text-[13.7px] font-heading font-semibold uppercase tracking-widest hover:bg-white/90 transition-colors", children: "Listo" })
     ] }) })
