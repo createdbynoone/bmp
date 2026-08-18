@@ -1,12 +1,11 @@
 import { app, ipcMain, protocol, net, BrowserWindow, Menu, nativeImage, shell, screen, dialog } from "electron";
-import { join } from "path";
+import { join, dirname } from "path";
 import { readFileSync, writeFileSync, createWriteStream, rmdirSync, mkdirSync, readdirSync, renameSync, unlinkSync } from "fs";
 import { homedir } from "os";
 import { execFile, exec } from "child_process";
 import { promisify } from "util";
 import { scryptSync, timingSafeEqual, randomUUID } from "crypto";
 import https from "https";
-import Anthropic from "@anthropic-ai/sdk";
 import electronUpdater from "electron-updater";
 import __cjs_mod__ from "node:module";
 const __filename = import.meta.filename;
@@ -209,6 +208,8 @@ Apply learnings silently. Output ONLY the new prompt.`;
 const execFileAsync = promisify(execFile);
 promisify(exec);
 const SHELL_PATH = [
+  join(homedir(), ".local/bin"),
+  // claude CLI
   "/usr/local/bin",
   "/opt/homebrew/bin",
   "/opt/homebrew/sbin",
@@ -237,7 +238,6 @@ function loadEnv() {
   }
 }
 loadEnv();
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const CLAUDE_MODEL = "claude-sonnet-5";
 const SYSTEM_PROMPT = `You are a specialist in generating NanaBanana2 (Higgsfield) prompts for Brotherhood streetwear marketing/editorial photography. Brotherhood is a Colombian streetwear brand with a bold, authentic aesthetic.
 
@@ -276,32 +276,37 @@ HIGGSFIELD CONTENT SAFETY — violations cause silent generation failure with no
 - Do not reference real public figures, celebrities, or identifiable faces
 - If a graphic on the garment contains text, describe its visual style only (e.g. "gothic serif lettering") — do not reproduce the exact words if they could be flagged
 - Keep lighting descriptions neutral — avoid "harsh shadows" on faces, "low-key" alone, or any wording that sounds like surveillance/threat context`;
-const MAX_IMAGE_PX = 1568;
-function resizeAndEncode(p) {
-  try {
-    const img = nativeImage.createFromPath(p);
-    if (!img.isEmpty()) {
-      const { width, height } = img.getSize();
-      const scale = Math.min(1, MAX_IMAGE_PX / Math.max(width, height));
-      const resized = scale < 1 ? img.resize({ width: Math.round(width * scale), height: Math.round(height * scale), quality: "good" }) : img;
-      const b642 = resized.toJPEG(85).toString("base64");
-      if (b642) return { b64: b642, mediaType: "image/jpeg" };
-    }
-    const raw = readFileSync(p);
-    const ext = p.split(".").pop()?.toLowerCase() ?? "";
-    const mediaType = ext === "png" ? "image/png" : ext === "gif" ? "image/gif" : ext === "webp" ? "image/webp" : "image/jpeg";
-    const b64 = raw.toString("base64");
-    if (!b64) return null;
-    return { b64, mediaType };
-  } catch {
-    return null;
-  }
+async function callClaudeCLI(systemPrompt, userPrompt, imagePaths) {
+  const dirs = Array.from(new Set(imagePaths.map((p) => dirname(p))));
+  const args = [
+    "-p",
+    userPrompt,
+    "--output-format",
+    "json",
+    "--model",
+    CLAUDE_MODEL,
+    "--system-prompt",
+    systemPrompt,
+    "--tools",
+    "Read",
+    "--permission-mode",
+    "bypassPermissions",
+    "--safe-mode",
+    "--no-session-persistence"
+  ];
+  for (const d of dirs) args.push("--add-dir", d);
+  const { stdout } = await execFileAsync("claude", args, { env: shellEnv(), maxBuffer: 20 * 1024 * 1024 });
+  const parsed = JSON.parse(stdout);
+  if (parsed.is_error) throw new Error(parsed.result || "Claude CLI error");
+  return parsed.result;
 }
-function filesToVisionContent(paths) {
-  return paths.map((p) => resizeAndEncode(p)).filter((r) => r !== null && r.b64.length > 0).map(({ b64, mediaType }) => ({
-    type: "image",
-    source: { type: "base64", media_type: mediaType, data: b64 }
-  }));
+function imageRefsBlock(label, paths) {
+  if (paths.length === 0) return "";
+  const lines = paths.map((p, i) => `Image ${i + 1}: ${p}`).join("\n");
+  return `## ${label}:
+${lines}
+
+`;
 }
 const GENERATE_COOLDOWN_MS = 4e3;
 let lastGenerateTime = 0;
@@ -318,31 +323,12 @@ handleWhenUnlocked("generate-prompt", async (_event, { refs, products, descripti
   if (!Array.isArray(refs) || !Array.isArray(products) || refs.length > 30 || products.length > 30) {
     throw new Error("Invalid file input");
   }
-  const refImages = filesToVisionContent(refs);
-  const productImages = filesToVisionContent(products);
   const systemWithMemory = SYSTEM_PROMPT + buildMemoryContext();
-  const userContent = [
-    { type: "text", text: "## REFERENCE IMAGES (composition/mood):" },
-    ...refImages,
-    { type: "text", text: "## PRODUCT PHOTOS (Brotherhood garment):" },
-    ...productImages,
-    {
-      type: "text",
-      text: `## USER BRIEF:
+  const userPrompt = imageRefsBlock("REFERENCE IMAGES (composition/mood)", refs) + imageRefsBlock("PRODUCT PHOTOS (Brotherhood garment)", products) + `## USER BRIEF:
 ${description}
 
-Generate the NanaBanana2 marketing prompt now.`
-    }
-  ];
-  const message = await anthropic.messages.create({
-    model: CLAUDE_MODEL,
-    max_tokens: 1024,
-    system: systemWithMemory,
-    messages: [{ role: "user", content: userContent }]
-  });
-  const block = message.content[0];
-  if (block.type !== "text") throw new Error("Unexpected response type");
-  const prompt = block.text;
+You MUST view every image listed above using the Read tool before writing. Generate the NanaBanana2 marketing prompt now.`;
+  const prompt = await callClaudeCLI(systemWithMemory, userPrompt, [...refs, ...products]);
   const entry = addMemoryEntry({ timestamp: Date.now(), description, prompt, fired: false });
   return { prompt, memoryId: entry.id };
 });
@@ -504,9 +490,9 @@ const MODEL_RATIOS = ["9:16", "4:5", "1:1", "16:9"];
 const RUNWARE_MAX_REFS = 14;
 const NANOBANANA_SIZES = {
   "1:1": { "1k": [1024, 1024], "2k": [2048, 2048], "4k": [4096, 4096] },
-  "4:5": { "1k": [896, 1120], "2k": [1792, 2240], "4k": [3584, 4480] },
-  "9:16": { "1k": [768, 1360], "2k": [1536, 2720], "4k": [3072, 5440] },
-  "16:9": { "1k": [1360, 768], "2k": [2720, 1536], "4k": [5440, 3072] }
+  "4:5": { "1k": [928, 1152], "2k": [1856, 2304], "4k": [3712, 4608] },
+  "9:16": { "1k": [768, 1376], "2k": [1536, 2752], "4k": [3072, 5504] },
+  "16:9": { "1k": [1376, 768], "2k": [2752, 1536], "4k": [5504, 3072] }
 };
 const SEEDREAM_SIZES = {
   "4:5": { "1k": [896, 1120], "2k": [1792, 2240] },

@@ -1,12 +1,11 @@
 import { app, BrowserWindow, ipcMain, shell, nativeImage, protocol, net, Menu, dialog, screen } from 'electron'
-import { join } from 'path'
+import { join, dirname } from 'path'
 import { readFileSync, writeFileSync, createWriteStream, renameSync, mkdirSync, readdirSync, unlinkSync, rmdirSync } from 'fs'
 import { homedir } from 'os'
 import { execFile, exec } from 'child_process'
 import { promisify } from 'util'
 import { scryptSync, timingSafeEqual, randomUUID } from 'crypto'
 import https from 'https'
-import Anthropic from '@anthropic-ai/sdk'
 import electronUpdater from 'electron-updater'
 const { autoUpdater } = electronUpdater
 
@@ -18,8 +17,8 @@ const { autoUpdater } = electronUpdater
 app.disableHardwareAcceleration()
 // Chromium's own background services (Safe Browsing pings, component/variations
 // updates, media session discovery) — irrelevant to a local tool, not used by
-// any app feature, safe to strip. Does not touch our own fetch() calls to
-// Anthropic/Runware, which the main process makes directly on demand.
+// any app feature, safe to strip. Does not touch our own fetch()/CLI calls to
+// Claude/Runware, which the main process makes directly on demand.
 app.commandLine.appendSwitch('disable-background-networking')
 app.commandLine.appendSwitch('disable-features', 'MediaRouter,OptimizationGuideModelDownloading,Translate')
 
@@ -100,7 +99,7 @@ function requireUnlocked(): void {
 
 // Every handler below requires the passphrase to have been entered once on
 // this machine — without this, a renderer that skips the LockScreen UI
-// (e.g. via devtools) still can't reach the filesystem or the Anthropic/Runware keys.
+// (e.g. via devtools) still can't reach the filesystem or the Runware key.
 function handleWhenUnlocked<Args extends unknown[], R>(
   channel: string,
   fn: (event: Electron.IpcMainInvokeEvent, ...args: Args) => R,
@@ -283,6 +282,7 @@ const execAsync = promisify(exec)
 
 // Electron doesn't inherit the shell PATH — resolve common binary locations manually
 const SHELL_PATH = [
+  join(homedir(), '.local/bin'), // claude CLI
   '/usr/local/bin',
   '/opt/homebrew/bin',
   '/opt/homebrew/sbin',
@@ -316,8 +316,6 @@ function loadEnv() {
 }
 
 loadEnv()
-
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 const CLAUDE_MODEL = 'claude-sonnet-5'
 
@@ -359,41 +357,36 @@ HIGGSFIELD CONTENT SAFETY — violations cause silent generation failure with no
 - If a graphic on the garment contains text, describe its visual style only (e.g. "gothic serif lettering") — do not reproduce the exact words if they could be flagged
 - Keep lighting descriptions neutral — avoid "harsh shadows" on faces, "low-key" alone, or any wording that sounds like surveillance/threat context`
 
-const MAX_IMAGE_PX = 1568 // Anthropic recommended max dimension
+// Calls the Claude Code CLI in headless mode instead of the Anthropic SDK, so prompt
+// generation is billed against the user's Claude subscription (Pro/Max) rather than
+// pay-per-token API usage. --safe-mode skips CLAUDE.md/skills/plugin loading (keeps
+// context — and cost — small); --tools Read + bypassPermissions lets it view the
+// referenced image paths without any write/exec capability; --add-dir scopes that
+// read access to only the folders the images actually live in.
+async function callClaudeCLI(systemPrompt: string, userPrompt: string, imagePaths: string[]): Promise<string> {
+  const dirs = Array.from(new Set(imagePaths.map((p) => dirname(p))))
+  const args = [
+    '-p', userPrompt,
+    '--output-format', 'json',
+    '--model', CLAUDE_MODEL,
+    '--system-prompt', systemPrompt,
+    '--tools', 'Read',
+    '--permission-mode', 'bypassPermissions',
+    '--safe-mode',
+    '--no-session-persistence',
+  ]
+  for (const d of dirs) args.push('--add-dir', d)
 
-function resizeAndEncode(p: string): { b64: string; mediaType: Anthropic.Base64ImageSource['media_type'] } | null {
-  try {
-    const img = nativeImage.createFromPath(p)
-    if (!img.isEmpty()) {
-      const { width, height } = img.getSize()
-      const scale = Math.min(1, MAX_IMAGE_PX / Math.max(width, height))
-      const resized = scale < 1
-        ? img.resize({ width: Math.round(width * scale), height: Math.round(height * scale), quality: 'good' })
-        : img
-      const b64 = resized.toJPEG(85).toString('base64')
-      if (b64) return { b64, mediaType: 'image/jpeg' }
-    }
-    // Fallback: read raw bytes and detect media type from extension
-    const raw = readFileSync(p)
-    const ext = p.split('.').pop()?.toLowerCase() ?? ''
-    const mediaType: Anthropic.Base64ImageSource['media_type'] =
-      ext === 'png' ? 'image/png' : ext === 'gif' ? 'image/gif' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
-    const b64 = raw.toString('base64')
-    if (!b64) return null
-    return { b64, mediaType }
-  } catch {
-    return null
-  }
+  const { stdout } = await execFileAsync('claude', args, { env: shellEnv(), maxBuffer: 20 * 1024 * 1024 })
+  const parsed = JSON.parse(stdout) as { is_error: boolean; result: string; subtype?: string }
+  if (parsed.is_error) throw new Error(parsed.result || 'Claude CLI error')
+  return parsed.result
 }
 
-function filesToVisionContent(paths: string[]): Anthropic.ImageBlockParam[] {
-  return paths
-    .map((p) => resizeAndEncode(p))
-    .filter((r): r is NonNullable<typeof r> => r !== null && r.b64.length > 0)
-    .map(({ b64, mediaType }) => ({
-      type: 'image' as const,
-      source: { type: 'base64' as const, media_type: mediaType, data: b64 },
-    }))
+function imageRefsBlock(label: string, paths: string[]): string {
+  if (paths.length === 0) return ''
+  const lines = paths.map((p, i) => `Image ${i + 1}: ${p}`).join('\n')
+  return `## ${label}:\n${lines}\n\n`
 }
 
 const GENERATE_COOLDOWN_MS = 4000
@@ -414,33 +407,16 @@ handleWhenUnlocked('generate-prompt', async (_event, { refs, products, descripti
     throw new Error('Invalid file input')
   }
 
-  const refImages = filesToVisionContent(refs)
-  const productImages = filesToVisionContent(products)
-
   // Inject accumulated memory into system prompt
   const systemWithMemory = SYSTEM_PROMPT + buildMemoryContext()
 
-  const userContent: Anthropic.MessageParam['content'] = [
-    { type: 'text', text: '## REFERENCE IMAGES (composition/mood):' },
-    ...refImages,
-    { type: 'text', text: '## PRODUCT PHOTOS (Brotherhood garment):' },
-    ...productImages,
-    {
-      type: 'text',
-      text: `## USER BRIEF:\n${description}\n\nGenerate the NanaBanana2 marketing prompt now.`,
-    },
-  ]
+  const userPrompt =
+    imageRefsBlock('REFERENCE IMAGES (composition/mood)', refs) +
+    imageRefsBlock('PRODUCT PHOTOS (Brotherhood garment)', products) +
+    `## USER BRIEF:\n${description}\n\n` +
+    'You MUST view every image listed above using the Read tool before writing. Generate the NanaBanana2 marketing prompt now.'
 
-  const message = await anthropic.messages.create({
-    model: CLAUDE_MODEL,
-    max_tokens: 1024,
-    system: systemWithMemory,
-    messages: [{ role: 'user', content: userContent }],
-  })
-
-  const block = message.content[0]
-  if (block.type !== 'text') throw new Error('Unexpected response type')
-  const prompt = block.text
+  const prompt = await callClaudeCLI(systemWithMemory, userPrompt, [...refs, ...products])
 
   // Save to memory
   const entry = addMemoryEntry({ timestamp: Date.now(), description, prompt, fired: false })
