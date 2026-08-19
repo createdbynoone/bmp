@@ -292,7 +292,16 @@ const SHELL_PATH = [
 ].join(':')
 
 function shellEnv(): NodeJS.ProcessEnv {
-  return { ...process.env, PATH: SHELL_PATH }
+  const env = { ...process.env, PATH: SHELL_PATH }
+  // loadEnv() below pulls in every key from ~/.bmp.env, including a leftover
+  // ANTHROPIC_API_KEY from before prompt generation moved to the `claude` CLI
+  // subscription auth. If that key is present in the subprocess env, the CLI
+  // authenticates with it instead of the logged-in OAuth session — silently
+  // reintroducing pay-per-token billing, and failing outright whenever that
+  // specific key is invalid/expired/out of credit (this is what caused the
+  // "Command failed: claude -p ..." error — the key had a real API failure).
+  delete env.ANTHROPIC_API_KEY
+  return env
 }
 
 // Load .env — checks multiple locations so packaged app can find it
