@@ -14,6 +14,10 @@ electron.contextBridge.exposeInMainWorld("bmp", {
     return path;
   },
   generatePrompt: (data) => electron.ipcRenderer.invoke("generate-prompt", data),
+  // Copies dropped files to a neutrally-named staging copy (image1.jpg, image2.jpg, ...)
+  // so Claude never sees the original filename — avoids the model reading meaning
+  // (or bias) into a descriptive/junk filename instead of the actual image content.
+  stageDroppedFiles: (paths) => electron.ipcRenderer.invoke("stage-dropped-files", { paths }),
   fireVideo: (data) => electron.ipcRenderer.invoke("fire-video", data),
   firePoyoImage: (data) => electron.ipcRenderer.invoke("fire-poyo-image", data),
   fireModel: (data) => electron.ipcRenderer.invoke("fire-model", data),

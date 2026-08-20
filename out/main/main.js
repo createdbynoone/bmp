@@ -1,8 +1,8 @@
 import { app, ipcMain, protocol, net, BrowserWindow, Menu, nativeImage, shell, screen, dialog } from "electron";
-import { join, dirname } from "path";
-import { readFileSync, writeFileSync, createWriteStream, rmdirSync, mkdirSync, readdirSync, renameSync, unlinkSync } from "fs";
+import { join, extname, dirname } from "path";
+import { readFileSync, rmSync, mkdirSync, writeFileSync, createWriteStream, existsSync, copyFileSync, rmdirSync, readdirSync, renameSync, unlinkSync } from "fs";
 import { homedir } from "os";
-import { execFile, exec } from "child_process";
+import { execFile, exec, spawn } from "child_process";
 import { promisify } from "util";
 import { scryptSync, timingSafeEqual, randomUUID } from "crypto";
 import https from "https";
@@ -82,6 +82,30 @@ const knownLocalPaths = /* @__PURE__ */ new Set();
 ipcMain.on("register-known-path", (event, path) => {
   if (typeof path === "string" && path) knownLocalPaths.add(path);
   event.returnValue = true;
+});
+function stagingRoot() {
+  return join(app.getPath("temp"), "bmp-staged-refs");
+}
+let stagedImageCounter = 0;
+function resetStagingDir() {
+  try {
+    rmSync(stagingRoot(), { recursive: true, force: true });
+  } catch {
+  }
+  mkdirSync(stagingRoot(), { recursive: true });
+  stagedImageCounter = 0;
+}
+handleWhenUnlocked("stage-dropped-files", (_event, { paths }) => {
+  if (!Array.isArray(paths) || paths.length === 0 || paths.length > 30) throw new Error("Invalid file input");
+  return paths.map((original) => {
+    if (typeof original !== "string" || !existsSync(original)) throw new Error(`File not found: ${original}`);
+    const ext = extname(original).toLowerCase() || ".jpg";
+    stagedImageCounter += 1;
+    const staged = join(stagingRoot(), `image${stagedImageCounter}${ext}`);
+    copyFileSync(original, staged);
+    knownLocalPaths.add(staged);
+    return staged;
+  });
 });
 function getIconPath(styleName) {
   const filename = `Icon-macOS-${styleName}-1024@1x.png`;
@@ -218,7 +242,9 @@ const SHELL_PATH = [
   process.env.PATH ?? ""
 ].join(":");
 function shellEnv() {
-  return { ...process.env, PATH: SHELL_PATH };
+  const env = { ...process.env, PATH: SHELL_PATH };
+  delete env.ANTHROPIC_API_KEY;
+  return env;
 }
 function loadEnv() {
   const candidates = [
@@ -277,12 +303,18 @@ HIGGSFIELD CONTENT SAFETY — violations cause silent generation failure with no
 - If a graphic on the garment contains text, describe its visual style only (e.g. "gothic serif lettering") — do not reproduce the exact words if they could be flagged
 - Keep lighting descriptions neutral — avoid "harsh shadows" on faces, "low-key" alone, or any wording that sounds like surveillance/threat context`;
 async function callClaudeCLI(systemPrompt, userPrompt, imagePaths) {
-  const dirs = Array.from(new Set(imagePaths.map((p) => dirname(p))));
+  const uniqueImages = Array.from(new Set(imagePaths));
+  const missing = uniqueImages.filter((p) => !existsSync(p));
+  if (missing.length > 0) {
+    throw new Error(`No se pudo acceder a estas imágenes (¿se movieron, se renombraron, o no están descargadas de iCloud?): ${missing.map((p) => p.split("/").pop()).join(", ")}`);
+  }
+  const dirs = Array.from(new Set(uniqueImages.map((p) => dirname(p))));
   const args = [
     "-p",
     userPrompt,
     "--output-format",
-    "json",
+    "stream-json",
+    "--verbose",
     "--model",
     CLAUDE_MODEL,
     "--system-prompt",
@@ -295,10 +327,49 @@ async function callClaudeCLI(systemPrompt, userPrompt, imagePaths) {
     "--no-session-persistence"
   ];
   for (const d of dirs) args.push("--add-dir", d);
-  const { stdout } = await execFileAsync("claude", args, { env: shellEnv(), maxBuffer: 20 * 1024 * 1024 });
-  const parsed = JSON.parse(stdout);
-  if (parsed.is_error) throw new Error(parsed.result || "Claude CLI error");
-  return parsed.result;
+  const stdout = await new Promise((resolve, reject) => {
+    const child = spawn("claude", args, { env: shellEnv() });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => {
+      out += d;
+    });
+    child.stderr.on("data", (d) => {
+      err += d;
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) reject(new Error(err.trim() || `claude CLI exited with code ${code}`));
+      else resolve(out);
+    });
+  });
+  const readPaths = /* @__PURE__ */ new Set();
+  let finalResult = null;
+  for (const line of stdout.split("\n")) {
+    if (!line.trim()) continue;
+    let evt;
+    try {
+      evt = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (evt.type === "assistant") {
+      for (const block of evt.message?.content ?? []) {
+        if (block.type === "tool_use" && block.name === "Read" && typeof block.input?.file_path === "string") {
+          readPaths.add(block.input.file_path.normalize("NFC"));
+        }
+      }
+    } else if (evt.type === "result") {
+      finalResult = evt;
+    }
+  }
+  if (!finalResult) throw new Error("Claude CLI no devolvió resultado");
+  if (finalResult.is_error) throw new Error(finalResult.result || "Claude CLI error");
+  const unread = uniqueImages.filter((p) => !readPaths.has(p.normalize("NFC")));
+  if (unread.length > 0) {
+    throw new Error(`Claude no llegó a ver ${unread.length} imagen(es) antes de generar el prompt: ${unread.map((p) => p.split("/").pop()).join(", ")}. Vuelve a intentar.`);
+  }
+  return finalResult.result;
 }
 function imageRefsBlock(label, paths) {
   if (paths.length === 0) return "";
@@ -324,10 +395,11 @@ handleWhenUnlocked("generate-prompt", async (_event, { refs, products, descripti
     throw new Error("Invalid file input");
   }
   const systemWithMemory = SYSTEM_PROMPT + buildMemoryContext();
+  const uniqueImageCount = (/* @__PURE__ */ new Set([...refs, ...products])).size;
   const userPrompt = imageRefsBlock("REFERENCE IMAGES (composition/mood)", refs) + imageRefsBlock("PRODUCT PHOTOS (Brotherhood garment)", products) + `## USER BRIEF:
 ${description}
 
-You MUST view every image listed above using the Read tool before writing. Generate the NanaBanana2 marketing prompt now.`;
+You MUST call the Read tool once for each of the ${uniqueImageCount} image path(s) listed above before writing anything — do not skip any, do not infer content from filenames alone. Only after viewing every image, generate the NanaBanana2 marketing prompt.`;
   const prompt = await callClaudeCLI(systemWithMemory, userPrompt, [...refs, ...products]);
   const entry = addMemoryEntry({ timestamp: Date.now(), description, prompt, fired: false });
   return { prompt, memoryId: entry.id };
@@ -934,6 +1006,7 @@ function setupAutoUpdater(win) {
   win.webContents.once("did-finish-load", () => autoUpdater.checkForUpdates());
 }
 app.whenReady().then(() => {
+  resetStagingDir();
   protocol.handle("localfile", (request) => {
     const filePath = decodeURIComponent(request.url.slice("localfile://".length));
     if (!unlocked || !knownLocalPaths.has(filePath)) {

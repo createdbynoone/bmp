@@ -18,7 +18,11 @@ export function DropZone({ label, multiple = false, files, onFiles }: DropZonePr
         .map((f) => { try { return window.bmp.getPathForFile(f) } catch { return '' } })
         .filter(Boolean)
       if (!dropped.length) return
-      onFiles(multiple ? [...files, ...dropped] : dropped)
+      // Stage to neutrally-named copies (image1.jpg, image2.jpg, ...) before Claude
+      // ever sees these paths — the original filename is never passed downstream.
+      window.bmp.stageDroppedFiles(dropped).then((staged) => {
+        onFiles(multiple ? [...files, ...staged] : staged)
+      }).catch(() => {})
     },
     [files, multiple, onFiles]
   )

@@ -1,8 +1,8 @@
 import { app, BrowserWindow, ipcMain, shell, nativeImage, protocol, net, Menu, dialog, screen } from 'electron'
-import { join, dirname } from 'path'
-import { readFileSync, writeFileSync, createWriteStream, renameSync, mkdirSync, readdirSync, unlinkSync, rmdirSync } from 'fs'
+import { join, dirname, extname } from 'path'
+import { readFileSync, writeFileSync, createWriteStream, renameSync, mkdirSync, readdirSync, unlinkSync, rmdirSync, rmSync, copyFileSync, existsSync } from 'fs'
 import { homedir } from 'os'
-import { execFile, exec } from 'child_process'
+import { execFile, exec, spawn } from 'child_process'
 import { promisify } from 'util'
 import { scryptSync, timingSafeEqual, randomUUID } from 'crypto'
 import https from 'https'
@@ -134,6 +134,38 @@ const knownLocalPaths = new Set<string>()
 ipcMain.on('register-known-path', (event, path: unknown) => {
   if (typeof path === 'string' && path) knownLocalPaths.add(path)
   event.returnValue = true
+})
+
+// Dropped files keep their original names (hashes, camera IDs, Pinterest-style
+// descriptive slugs, accented Spanish text). Claude reads that filename as text
+// alongside the image — a loaded or misleading name can bias the description
+// away from what's actually in the frame. Staging a same-content copy under a
+// neutral "imageN" name before it ever reaches refs/products removes that bias
+// and sidesteps the macOS NFC/NFD accent-normalization mismatch entirely, since
+// ASCII names have no decomposition to disagree about.
+function stagingRoot(): string {
+  return join(app.getPath('temp'), 'bmp-staged-refs')
+}
+
+let stagedImageCounter = 0
+
+function resetStagingDir() {
+  try { rmSync(stagingRoot(), { recursive: true, force: true }) } catch {}
+  mkdirSync(stagingRoot(), { recursive: true })
+  stagedImageCounter = 0
+}
+
+handleWhenUnlocked('stage-dropped-files', (_event, { paths }: { paths: string[] }) => {
+  if (!Array.isArray(paths) || paths.length === 0 || paths.length > 30) throw new Error('Invalid file input')
+  return paths.map((original) => {
+    if (typeof original !== 'string' || !existsSync(original)) throw new Error(`File not found: ${original}`)
+    const ext = extname(original).toLowerCase() || '.jpg'
+    stagedImageCounter += 1
+    const staged = join(stagingRoot(), `image${stagedImageCounter}${ext}`)
+    copyFileSync(original, staged)
+    knownLocalPaths.add(staged)
+    return staged
+  })
 })
 
 function getIconPath(styleName: string): string {
@@ -372,11 +404,24 @@ HIGGSFIELD CONTENT SAFETY — violations cause silent generation failure with no
 // context — and cost — small); --tools Read + bypassPermissions lets it view the
 // referenced image paths without any write/exec capability; --add-dir scopes that
 // read access to only the folders the images actually live in.
+//
+// The CLI decides on its own whether to call the Read tool on each image path —
+// nothing forces it to. Streaming the transcript (--output-format stream-json) lets
+// us count which paths it actually opened and compare that against what we sent, so
+// a skipped reference fails loudly instead of silently shipping a prompt that never
+// looked at the image.
 async function callClaudeCLI(systemPrompt: string, userPrompt: string, imagePaths: string[]): Promise<string> {
-  const dirs = Array.from(new Set(imagePaths.map((p) => dirname(p))))
+  const uniqueImages = Array.from(new Set(imagePaths))
+  const missing = uniqueImages.filter((p) => !existsSync(p))
+  if (missing.length > 0) {
+    throw new Error(`No se pudo acceder a estas imágenes (¿se movieron, se renombraron, o no están descargadas de iCloud?): ${missing.map((p) => p.split('/').pop()).join(', ')}`)
+  }
+
+  const dirs = Array.from(new Set(uniqueImages.map((p) => dirname(p))))
   const args = [
     '-p', userPrompt,
-    '--output-format', 'json',
+    '--output-format', 'stream-json',
+    '--verbose',
     '--model', CLAUDE_MODEL,
     '--system-prompt', systemPrompt,
     '--tools', 'Read',
@@ -386,10 +431,48 @@ async function callClaudeCLI(systemPrompt: string, userPrompt: string, imagePath
   ]
   for (const d of dirs) args.push('--add-dir', d)
 
-  const { stdout } = await execFileAsync('claude', args, { env: shellEnv(), maxBuffer: 20 * 1024 * 1024 })
-  const parsed = JSON.parse(stdout) as { is_error: boolean; result: string; subtype?: string }
-  if (parsed.is_error) throw new Error(parsed.result || 'Claude CLI error')
-  return parsed.result
+  const stdout = await new Promise<string>((resolve, reject) => {
+    const child = spawn('claude', args, { env: shellEnv() })
+    let out = ''
+    let err = ''
+    child.stdout.on('data', (d) => { out += d })
+    child.stderr.on('data', (d) => { err += d })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      if (code !== 0) reject(new Error(err.trim() || `claude CLI exited with code ${code}`))
+      else resolve(out)
+    })
+  })
+
+  // macOS can echo file paths back through the Read tool in NFD (decomposed accents)
+  // even when we sent NFC, so compare normalized forms to avoid false "unread" flags
+  // on filenames with tildes/ñ.
+  const readPaths = new Set<string>()
+  let finalResult: { is_error: boolean; result: string } | null = null
+  for (const line of stdout.split('\n')) {
+    if (!line.trim()) continue
+    let evt: any
+    try { evt = JSON.parse(line) } catch { continue }
+    if (evt.type === 'assistant') {
+      for (const block of evt.message?.content ?? []) {
+        if (block.type === 'tool_use' && block.name === 'Read' && typeof block.input?.file_path === 'string') {
+          readPaths.add(block.input.file_path.normalize('NFC'))
+        }
+      }
+    } else if (evt.type === 'result') {
+      finalResult = evt
+    }
+  }
+
+  if (!finalResult) throw new Error('Claude CLI no devolvió resultado')
+  if (finalResult.is_error) throw new Error(finalResult.result || 'Claude CLI error')
+
+  const unread = uniqueImages.filter((p) => !readPaths.has(p.normalize('NFC')))
+  if (unread.length > 0) {
+    throw new Error(`Claude no llegó a ver ${unread.length} imagen(es) antes de generar el prompt: ${unread.map((p) => p.split('/').pop()).join(', ')}. Vuelve a intentar.`)
+  }
+
+  return finalResult.result
 }
 
 function imageRefsBlock(label: string, paths: string[]): string {
@@ -419,11 +502,13 @@ handleWhenUnlocked('generate-prompt', async (_event, { refs, products, descripti
   // Inject accumulated memory into system prompt
   const systemWithMemory = SYSTEM_PROMPT + buildMemoryContext()
 
+  const uniqueImageCount = new Set([...refs, ...products]).size
+
   const userPrompt =
     imageRefsBlock('REFERENCE IMAGES (composition/mood)', refs) +
     imageRefsBlock('PRODUCT PHOTOS (Brotherhood garment)', products) +
     `## USER BRIEF:\n${description}\n\n` +
-    'You MUST view every image listed above using the Read tool before writing. Generate the NanaBanana2 marketing prompt now.'
+    `You MUST call the Read tool once for each of the ${uniqueImageCount} image path(s) listed above before writing anything — do not skip any, do not infer content from filenames alone. Only after viewing every image, generate the NanaBanana2 marketing prompt.`
 
   const prompt = await callClaudeCLI(systemWithMemory, userPrompt, [...refs, ...products])
 
@@ -1152,6 +1237,7 @@ function setupAutoUpdater(win: BrowserWindow) {
 }
 
 app.whenReady().then(() => {
+  resetStagingDir()
   protocol.handle('localfile', (request) => {
     const filePath = decodeURIComponent(request.url.slice('localfile://'.length))
     // Only serve paths the renderer legitimately resolved (a real Finder drag

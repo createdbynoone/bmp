@@ -7071,7 +7071,10 @@ function DropZone({ label, multiple = false, files, onFiles }) {
         }
       }).filter(Boolean);
       if (!dropped.length) return;
-      onFiles(multiple ? [...files, ...dropped] : dropped);
+      window.bmp.stageDroppedFiles(dropped).then((staged) => {
+        onFiles(multiple ? [...files, ...staged] : staged);
+      }).catch(() => {
+      });
     },
     [files, multiple, onFiles]
   );

@@ -5,6 +5,7 @@ interface Window {
       unlock: (key: string) => Promise<{ ok: boolean; lockUntil: number }>
     }
     getPathForFile: (file: File) => string
+    stageDroppedFiles: (paths: string[]) => Promise<string[]>
     generatePrompt: (data: { refs: string[]; products: string[]; description: string }) => Promise<{ prompt: string; memoryId: string }>
     fireVideo: (data: { prompt: string; products: string[]; videoModel: string; aspectRatio: string; resolution: string; duration: number }) => Promise<{ success: boolean; outputPath: string }>
     firePoyoImage: (data: { prompt: string; products: string[]; aspectRatio: string; resolution: string; provider: 'seedream' | 'nanobanana'; imageUrls?: string[] }) => Promise<{ success: boolean; outputPath: string }>

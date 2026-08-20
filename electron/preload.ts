@@ -18,6 +18,12 @@ contextBridge.exposeInMainWorld('bmp', {
   generatePrompt: (data: { refs: string[]; products: string[]; description: string }) =>
     ipcRenderer.invoke('generate-prompt', data),
 
+  // Copies dropped files to a neutrally-named staging copy (image1.jpg, image2.jpg, ...)
+  // so Claude never sees the original filename — avoids the model reading meaning
+  // (or bias) into a descriptive/junk filename instead of the actual image content.
+  stageDroppedFiles: (paths: string[]) =>
+    ipcRenderer.invoke('stage-dropped-files', { paths }) as Promise<string[]>,
+
   fireVideo: (data: { prompt: string; products: string[]; videoModel: string; aspectRatio: string; resolution: string; duration: number }) =>
     ipcRenderer.invoke('fire-video', data),
 

@@ -91,7 +91,8 @@ preload: join(__dirname, '../preload/preload.cjs')
 - La pestaña con tarea activa muestra un punto accent pulsante
 
 ## IPC handlers (main.ts)
-- `generate-prompt` — Claude Sonnet 5 visión → prompt
+- `generate-prompt` — Claude Sonnet 5 vía CLI (`claude -p --tools Read`, no SDK) → prompt. `callClaudeCLI` usa `--output-format stream-json` para contar qué paths tocó el Read tool y comparar contra las imágenes enviadas; si alguna quedó sin leer, revienta con error explícito en vez de devolver un prompt que nunca vio esa referencia (v1.11.0, 2026-08-20: bug real en producción — un nombre de archivo tipo captura de pantalla macOS con paréntesis/puntos hacía que Claude no la leyera, y con `--output-format json` eso pasaba silencioso)
+- `stage-dropped-files` — copia cada archivo soltado a `$TMPDIR/bmp-staged-refs/imageN.ext` antes de que su path llegue a `refs`/`products`; Claude nunca ve el nombre original (evita bias por nombre descriptivo/basura y el mismatch NFC/NFD de tildes en macOS). Reset del contador + carpeta en cada arranque (`resetStagingDir` en `app.whenReady`)
 - `fire-poyo-image` — Runware Seedream 5.0 Pro / Nano Banana Pro (acepta `provider` + `imageUrls` pre-preparadas; nombre del canal quedó igual por compat, ya no habla con POYO)
 - `fire-model` — pipeline Model completo (SKU + full body + macro face; NB2 vía Runware o Recraft)
 - `upload-poyo-refs` — prepara refs como data URI una vez, retorna para fan-out paralelo (nombre legado, ver arriba)
