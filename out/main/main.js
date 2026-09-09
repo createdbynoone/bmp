@@ -1,10 +1,10 @@
 import { app, ipcMain, protocol, net, BrowserWindow, Menu, nativeImage, shell, screen, dialog } from "electron";
 import { join, extname, dirname } from "path";
-import { readFileSync, rmSync, mkdirSync, writeFileSync, createWriteStream, existsSync, copyFileSync, rmdirSync, readdirSync, renameSync, unlinkSync } from "fs";
+import { readFileSync, rmSync, mkdirSync, writeFileSync, createWriteStream, existsSync, copyFileSync, rmdirSync, readdirSync } from "fs";
 import { homedir } from "os";
 import { execFile, exec, spawn } from "child_process";
 import { promisify } from "util";
-import { scryptSync, timingSafeEqual, randomUUID } from "crypto";
+import { scryptSync, timingSafeEqual } from "crypto";
 import https from "https";
 import electronUpdater from "electron-updater";
 import __cjs_mod__ from "node:module";
@@ -264,6 +264,55 @@ function loadEnv() {
   }
 }
 loadEnv();
+const HF_BIN = "higgsfield";
+function higgsfieldCredentialsPath() {
+  return join(homedir(), ".config", "higgsfield", "credentials.json");
+}
+async function higgsfieldJSON(args) {
+  const { stdout } = await execFileAsync(HF_BIN, [...args, "--json"], { env: shellEnv(), maxBuffer: 1024 * 1024 * 32 });
+  return JSON.parse(stdout);
+}
+async function ensureWorkspaceSelected() {
+  const status = await higgsfieldJSON(["workspace", "status"]).catch(() => null);
+  if (status?.id) return;
+  const workspaces = await higgsfieldJSON(["workspace", "list"]);
+  if (workspaces.length > 0) {
+    await execFileAsync(HF_BIN, ["workspace", "set", workspaces[0].id], { env: shellEnv() });
+  }
+}
+function hfArgs(params) {
+  const args = [];
+  for (const [key, value] of Object.entries(params)) {
+    if (value === void 0 || value === null) continue;
+    const flag = `--${key.replace(/_/g, "-")}`;
+    if (Array.isArray(value)) {
+      for (const v of value) args.push(`${flag}=${v}`);
+    } else {
+      args.push(`${flag}=${value}`);
+    }
+  }
+  return args;
+}
+async function higgsfieldGenerate(jobType, params, sendProgress) {
+  const ids = await higgsfieldJSON(["generate", "create", jobType, ...hfArgs(params)]);
+  const jobId = ids[0];
+  if (!jobId) throw new Error("Higgsfield: no job id returned");
+  let lastStatus = "";
+  const startTs = Date.now();
+  for (let i = 0; i < 200; i++) {
+    await new Promise((r) => setTimeout(r, i === 0 ? 2e3 : 3e3));
+    const job = await higgsfieldJSON(["generate", "get", jobId]);
+    const elapsed = Math.round((Date.now() - startTs) / 1e3);
+    if (job.status !== lastStatus) {
+      sendProgress(`${job.status} · ${elapsed}s`);
+      lastStatus = job.status;
+    }
+    if (job.status === "completed") return job;
+    if (job.status === "failed") throw new Error("Higgsfield: generation failed (credits refunded)");
+    if (job.status === "nsfw") throw new Error("Higgsfield: rejected by content moderation (credits refunded)");
+  }
+  throw new Error("Timeout — job exceeded 10 minutes");
+}
 const CLAUDE_MODEL = "claude-sonnet-5";
 const SYSTEM_PROMPT = `You are a specialist in generating NanaBanana2 (Higgsfield) prompts for Brotherhood streetwear marketing/editorial photography. Brotherhood is a Colombian streetwear brand with a bold, authentic aesthetic.
 
@@ -433,10 +482,22 @@ handleWhenUnlocked("get-memory-entries", () => {
   return [...memory.entries].reverse();
 });
 handleWhenUnlocked("check-higgsfield-auth", async () => {
-  return { authenticated: !!process.env.RUNWARE_API_KEY };
+  if (!existsSync(higgsfieldCredentialsPath())) return { authenticated: false };
+  try {
+    await ensureWorkspaceSelected();
+    return { authenticated: true };
+  } catch {
+    return { authenticated: false };
+  }
 });
 handleWhenUnlocked("higgsfield-login", async () => {
-  return { ok: false, error: "Add RUNWARE_API_KEY to ~/.bmp.env" };
+  try {
+    await execFileAsync(HF_BIN, ["auth", "login"], { env: shellEnv(), timeout: 12e4 });
+    await ensureWorkspaceSelected();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 });
 function downloadFile(url, destPath) {
   if (!url.startsWith("https://")) return Promise.reject(new Error("Only HTTPS downloads are allowed"));
@@ -485,112 +546,37 @@ function downloadDmgWithProgress(url, destPath, token, onProgress) {
   });
 }
 handleWhenUnlocked("get-higgsfield-credits", async () => {
-  return { credits: null, plan: "nano-banana-2" };
-});
-const MAX_FRAME_PX = 1280;
-const RUNWARE_API_URL = "https://api.runware.ai/v1";
-function runwareTaskUUID() {
-  return randomUUID();
-}
-async function runwareRequest(tasks, apiKey) {
-  const res = await fetch(RUNWARE_API_URL, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify(tasks)
-  });
-  const json = await res.json();
-  const errors = json.errors ?? [];
-  if (!res.ok && errors.length === 0) throw new Error(`HTTP ${res.status}`);
-  return { data: json.data ?? [], errors };
-}
-async function pollRunwareTask(taskUUID, apiKey, sendProgress) {
-  let lastStatus = "";
-  let lastPct = -1;
-  const startTs = Date.now();
-  for (let i = 0; i < 120; i++) {
-    await new Promise((r) => setTimeout(r, i === 0 ? 3e3 : 5e3));
-    const { data, errors } = await runwareRequest([{ taskType: "getResponse", taskUUID }], apiKey);
-    if (errors.length > 0) throw new Error(errors[0].message ?? "Runware error");
-    const task = data[0];
-    if (!task) continue;
-    const status = String(task.status ?? "");
-    const pct = Number(task.progress ?? 0);
-    const elapsed = Math.round((Date.now() - startTs) / 1e3);
-    if (status !== lastStatus || pct !== lastPct) {
-      sendProgress(`${status || "processing"}${pct > 0 ? ` ${pct}%` : ""} · ${elapsed}s`);
-      lastStatus = status;
-      lastPct = pct;
-    }
-    if (task.imageURL || task.videoURL || status === "success") return task;
-    if (status === "error") throw new Error("Runware: generation failed");
-  }
-  throw new Error("Timeout — task exceeded 10 minutes");
-}
-async function runwareGenerate(task, apiKey, sendProgress) {
-  const { data, errors } = await runwareRequest([task], apiKey);
-  if (errors.length > 0) throw new Error(errors[0].message ?? "Runware error");
-  const result = data[0];
-  if (!result) throw new Error("Empty Runware response");
-  if (result.imageURL || result.videoURL) return result;
-  return pollRunwareTask(task.taskUUID, apiKey, sendProgress);
-}
-async function fileToDataUri(filePath, maxPx) {
   try {
-    const img = nativeImage.createFromPath(filePath);
-    if (!img.isEmpty()) {
-      const { width, height } = img.getSize();
-      const scale = Math.min(1, maxPx / Math.max(width, height));
-      const resized = scale < 1 ? img.resize({ width: Math.round(width * scale), height: Math.round(height * scale), quality: "best" }) : img;
-      return `data:image/jpeg;base64,${resized.toJPEG(90).toString("base64")}`;
-    }
+    const status = await higgsfieldJSON(["account", "status"]);
+    return { credits: status.credits, plan: status.subscription_plan_type };
   } catch {
+    return { credits: null, plan: null };
   }
-  const raw = readFileSync(filePath);
-  const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
-  const mime = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : ext === "gif" ? "image/gif" : "image/jpeg";
-  return `data:${mime};base64,${raw.toString("base64")}`;
-}
-async function filesToDataUris(filePaths, maxPx, sendProgress) {
-  if (filePaths.length === 0) return [];
-  sendProgress(`Preparing ${filePaths.length} image${filePaths.length > 1 ? "s" : ""}...`);
-  const uris = await Promise.all(filePaths.map((f) => fileToDataUri(f, maxPx)));
-  sendProgress(`${filePaths.length} image${filePaths.length > 1 ? "s" : ""} ready ✓`);
-  return uris;
-}
+});
 const IMAGE_RATIOS = ["4:5", "9:16"];
 const MODEL_RATIOS = ["9:16", "4:5", "1:1", "16:9"];
-const RUNWARE_MAX_REFS = 14;
-const NANOBANANA_SIZES = {
-  "1:1": { "1k": [1024, 1024], "2k": [2048, 2048], "4k": [4096, 4096] },
-  "4:5": { "1k": [928, 1152], "2k": [1856, 2304], "4k": [3712, 4608] },
-  "9:16": { "1k": [768, 1376], "2k": [1536, 2752], "4k": [3072, 5504] },
-  "16:9": { "1k": [1376, 768], "2k": [2752, 1536], "4k": [5504, 3072] }
-};
-const SEEDREAM_SIZES = {
-  "4:5": { "1k": [896, 1120], "2k": [1792, 2240] },
-  "9:16": { "1k": [768, 1360], "2k": [1536, 2720] }
-};
 const IMAGE_PROVIDERS = {
-  seedream: { model: "bytedance:seedream@5.0-pro", resolutions: ["1k", "2k"], sizes: SEEDREAM_SIZES, maxRefs: 10 },
-  nanobanana: { model: "google:4@2", resolutions: ["1k", "2k", "4k"], sizes: NANOBANANA_SIZES, maxRefs: 14 }
+  seedream: { jobType: "seedream_v5_pro", resolutions: ["1k", "2k"], maxRefs: 10 },
+  nanobanana: { jobType: "nano_banana_pro", resolutions: ["1k", "2k", "4k"], maxRefs: 14 }
 };
 handleWhenUnlocked("upload-poyo-refs", async (event, { products }) => {
   if (!Array.isArray(products)) throw new Error("Invalid products");
   const sendProgress = (line) => event.sender.send("higgsfield-progress", { scope: "image", line });
+  const MAX_REFS = 14;
   let files = products;
-  if (files.length > RUNWARE_MAX_REFS) {
-    sendProgress(`Runware accepts max ${RUNWARE_MAX_REFS} reference images — using the first ${RUNWARE_MAX_REFS}`);
-    files = files.slice(0, RUNWARE_MAX_REFS);
+  if (files.length > MAX_REFS) {
+    sendProgress(`Higgsfield accepts max ${MAX_REFS} reference images — using the first ${MAX_REFS}`);
+    files = files.slice(0, MAX_REFS);
   }
-  const urls = await filesToDataUris(files, MAX_FRAME_PX, sendProgress);
+  sendProgress(`Uploading ${files.length} image${files.length > 1 ? "s" : ""}...`);
+  const urls = await Promise.all(files.map((f) => higgsfieldJSON(["upload", "create", f]).then((r) => r.id)));
+  sendProgress(`${files.length} image${files.length > 1 ? "s" : ""} ready ✓`);
   return { urls };
 });
 handleWhenUnlocked("fire-poyo-image", async (event, { prompt, products, aspectRatio, resolution, provider, imageUrls: presetUrls }) => {
   if (typeof prompt !== "string" || prompt.trim().length === 0) throw new Error("Invalid prompt");
   if (!Array.isArray(products)) throw new Error("Invalid products");
   if (presetUrls !== void 0 && (!Array.isArray(presetUrls) || presetUrls.some((u) => typeof u !== "string"))) throw new Error("Invalid imageUrls");
-  const apiKey = process.env.RUNWARE_API_KEY;
-  if (!apiKey) throw new Error("RUNWARE_API_KEY not set — add it to ~/.bmp.env");
   const providerKey = provider === "seedream" ? "seedream" : "nanobanana";
   const providerCfg = IMAGE_PROVIDERS[providerKey];
   const timestamp = Date.now();
@@ -599,34 +585,22 @@ handleWhenUnlocked("fire-poyo-image", async (event, { prompt, products, aspectRa
   const safeSize = IMAGE_RATIOS.includes(aspectRatio) ? aspectRatio : "4:5";
   const allowedResolutions = providerCfg.resolutions;
   const safeRes = (allowedResolutions.includes(resolution) ? resolution : allowedResolutions[allowedResolutions.length - 1]).toLowerCase();
-  const [width, height] = providerCfg.sizes[safeSize][safeRes];
-  let imageUris = (presetUrls ?? []).slice(0, providerCfg.maxRefs);
-  if (imageUris.length === 0 && products.length > 0) {
-    let files = products;
-    if (files.length > providerCfg.maxRefs) {
+  let refs = (presetUrls ?? []).slice(0, providerCfg.maxRefs);
+  if (refs.length === 0 && products.length > 0) {
+    if (products.length > providerCfg.maxRefs) {
       sendProgress(`${providerKey === "seedream" ? "Seedream" : "Nano Banana Pro"} accepts max ${providerCfg.maxRefs} reference images — using the first ${providerCfg.maxRefs}`);
-      files = files.slice(0, providerCfg.maxRefs);
     }
-    try {
-      imageUris = await filesToDataUris(files, MAX_FRAME_PX, sendProgress);
-    } catch (err) {
-      sendProgress(err instanceof Error ? err.message : String(err));
-      return { success: false, outputPath: "", error: String(err) };
-    }
+    refs = products.slice(0, providerCfg.maxRefs);
   }
-  sendProgress(`Submitting ${providerCfg.model} (${safeSize} · ${safeRes.toUpperCase()})...`);
-  const task = {
-    taskType: "imageInference",
-    taskUUID: runwareTaskUUID(),
-    model: providerCfg.model,
-    positivePrompt: prompt,
-    width,
-    height
-  };
-  if (imageUris.length > 0) task.inputs = { referenceImages: imageUris };
+  sendProgress(`Submitting ${providerCfg.jobType} (${safeSize} · ${safeRes.toUpperCase()})...`);
   try {
-    const result = await runwareGenerate(task, apiKey, sendProgress);
-    const url = result.imageURL;
+    const job = await higgsfieldGenerate(providerCfg.jobType, {
+      prompt,
+      aspect_ratio: safeSize,
+      resolution: safeRes,
+      image_references: refs.length > 0 ? refs : void 0
+    }, sendProgress);
+    const url = job.result_url;
     if (!url) {
       sendProgress("No image in response");
       return { success: false, outputPath: "", error: "No image file" };
@@ -653,12 +627,6 @@ handleWhenUnlocked("fire-poyo-image", async (event, { prompt, products, aspectRa
   }
 });
 const MODELS_DIR = "/Volumes/Sandisk Home/Brotherhood/IA/Modelos";
-const RECRAFT_SIZES = {
-  "9:16": "1536x2688",
-  "4:5": "1792x2304",
-  "1:1": "2048x2048",
-  "16:9": "2688x1536"
-};
 const MACRO_FACE_PROMPT = `Macro beauty close-up of the EXACT same person from the reference image — preserve identical facial features, bone structure, skin tone, eye color, eyebrows, hairstyle and any visible styling exactly as shown. Tight portrait framing from forehead to chin filling the frame, face centered, eyes locked direct to lens in razor-sharp focus. Ultra-detailed natural skin texture: visible pores, fine vellus hair, natural micro-imperfections and subtle sheen — no airbrushing. Individual eyelashes and brow hairs resolved, natural lip texture. Soft wraparound beauty-dish light with clean catchlights in both eyes, gentle falloff, seamless neutral studio backdrop dissolving out of focus. Shot on Sony A7R IV, 90mm macro lens at f/4, shallow depth of field. Ultra-realistic commercial beauty campaign photography.`;
 const reservedSkus = /* @__PURE__ */ new Set();
 function allocateSku(gender) {
@@ -677,10 +645,6 @@ function allocateSku(gender) {
   mkdirSync(dir, { recursive: true });
   return { sku, dir };
 }
-function sniffImageExt(path) {
-  const head = readFileSync(path).subarray(0, 4);
-  return head.toString("latin1") === "RIFF" ? "webp" : head[0] === 137 && head[1] === 80 ? "png" : head[0] === 255 && head[1] === 216 ? "jpg" : "png";
-}
 async function sendSavedLine(outputPath, sendProgress) {
   const name = outputPath.split("/").pop() ?? outputPath;
   try {
@@ -692,52 +656,10 @@ async function sendSavedLine(outputPath, sendProgress) {
     sendProgress(`Saved: ${name}`);
   }
 }
-async function recraftGenerateToFile(prompt, aspectRatio, destDir, baseName, sendProgress) {
-  const apiKey = process.env.RECRAFT_API_KEY;
-  if (!apiKey) throw new Error("RECRAFT_API_KEY not set — add it to ~/.bmp.env");
-  const size = RECRAFT_SIZES[aspectRatio] ?? RECRAFT_SIZES["4:5"];
-  sendProgress(`Submitting Recraft v4.1 Pro (${aspectRatio} · ${size})...`);
-  const res = await fetch("https://external.api.recraft.ai/v1/images/generations", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    // No `style` param — Recraft v4.1 Pro rejects it ("doesn't support style
-    // 'realistic_image'"); the model's default is already photorealistic
-    body: JSON.stringify({ prompt, model: "recraftv4_1_pro", n: 1, size, response_format: "url" })
-  });
-  if (!res.ok) {
-    let msg = `HTTP ${res.status}`;
-    try {
-      const errBody = await res.json();
-      msg = errBody.error?.message ?? errBody.message ?? msg;
-    } catch {
-    }
-    throw new Error(msg);
-  }
-  const data = await res.json();
-  const imageUrl = data.data?.[0]?.url;
-  if (!imageUrl) throw new Error("No image URL in Recraft response");
-  sendProgress("Downloading image...");
-  const tmpPath = join(destDir, `${baseName}.download`);
-  await downloadFile(imageUrl, tmpPath);
-  const outputPath = join(destDir, `${baseName}.${sniffImageExt(tmpPath)}`);
-  renameSync(tmpPath, outputPath);
-  knownLocalPaths.add(outputPath);
-  await sendSavedLine(outputPath, sendProgress);
-  return outputPath;
-}
-async function runwareGenerateToFile(opts) {
-  const { model, prompt, width, height, referenceImages, apiKey, destDir, baseName, sendProgress } = opts;
-  const task = {
-    taskType: "imageInference",
-    taskUUID: runwareTaskUUID(),
-    model,
-    positivePrompt: prompt,
-    width,
-    height
-  };
-  if (referenceImages && referenceImages.length > 0) task.inputs = { referenceImages };
-  const result = await runwareGenerate(task, apiKey, sendProgress);
-  const url = result.imageURL;
+async function higgsfieldGenerateToFile(opts) {
+  const { jobType, params, destDir, baseName, sendProgress } = opts;
+  const job = await higgsfieldGenerate(jobType, params, sendProgress);
+  const url = job.result_url;
   if (!url) throw new Error("No image file in response");
   const urlExt = url.split(".").pop()?.split("?")[0]?.toLowerCase();
   const ext = urlExt && urlExt.length <= 4 ? urlExt : "jpg";
@@ -748,27 +670,15 @@ async function runwareGenerateToFile(opts) {
   await sendSavedLine(outputPath, sendProgress);
   return outputPath;
 }
-async function refToDataUri(path) {
-  if (!path.toLowerCase().endsWith(".webp")) return fileToDataUri(path, MAX_FRAME_PX);
-  const tmp = path.replace(/\.webp$/i, "_ref.jpg");
-  await execFileAsync("sips", ["-s", "format", "jpeg", "-s", "formatOptions", "90", path, "--out", tmp]);
-  try {
-    return await fileToDataUri(tmp, MAX_FRAME_PX);
-  } finally {
-    try {
-      unlinkSync(tmp);
-    } catch {
-    }
-  }
-}
 handleWhenUnlocked("fire-model", async (event, { prompt, engine, aspectRatio, resolution, gender }) => {
   if (typeof prompt !== "string" || prompt.trim().length === 0 || prompt.length > 1e4) throw new Error("Invalid prompt");
   const sendProgress = (line) => event.sender.send("higgsfield-progress", { scope: "model", line });
   const safeGender = gender === "male" ? "male" : "female";
   const safeEngine = engine === "recraft" ? "recraft" : "nb2";
   const safeSize = MODEL_RATIOS.includes(aspectRatio) ? aspectRatio : "4:5";
-  const safeRes = ["1k", "2k", "4k"].includes(resolution) ? resolution : "2k";
-  const runwareKey = process.env.RUNWARE_API_KEY;
+  const recraftResolutions = ["1k", "2k"];
+  const nb2Resolutions = ["1k", "2k", "4k"];
+  const safeRes = safeEngine === "recraft" ? recraftResolutions.includes(resolution) ? resolution : "2k" : nb2Resolutions.includes(resolution) ? resolution : "2k";
   let sku;
   let dir;
   try {
@@ -783,17 +693,19 @@ handleWhenUnlocked("fire-model", async (event, { prompt, engine, aspectRatio, re
     let fullPath;
     try {
       if (safeEngine === "recraft") {
-        fullPath = await recraftGenerateToFile(prompt, safeSize, dir, sku, sendProgress);
+        sendProgress(`Submitting Recraft V4.1 (${safeSize} · ${safeRes.toUpperCase()})...`);
+        fullPath = await higgsfieldGenerateToFile({
+          jobType: "recraft_v4_1",
+          params: { prompt, aspect_ratio: safeSize, resolution: safeRes },
+          destDir: dir,
+          baseName: sku,
+          sendProgress
+        });
       } else {
-        if (!runwareKey) throw new Error("RUNWARE_API_KEY not set — add it to ~/.bmp.env");
-        sendProgress(`Submitting Nano Banana 2 (${safeSize} · ${safeRes.toUpperCase()})...`);
-        const [w, h] = NANOBANANA_SIZES[safeSize][safeRes];
-        fullPath = await runwareGenerateToFile({
-          model: "google:4@3",
-          prompt,
-          width: w,
-          height: h,
-          apiKey: runwareKey,
+        sendProgress(`Submitting Nano Banana Pro (${safeSize} · ${safeRes.toUpperCase()})...`);
+        fullPath = await higgsfieldGenerateToFile({
+          jobType: "nano_banana_pro",
+          params: { prompt, aspect_ratio: safeSize, resolution: safeRes },
           destDir: dir,
           baseName: sku,
           sendProgress
@@ -810,29 +722,18 @@ handleWhenUnlocked("fire-model", async (event, { prompt, engine, aspectRatio, re
     }
     let facePath = "";
     let faceError;
-    if (!runwareKey) {
-      faceError = "RUNWARE_API_KEY not set — face macro skipped";
-      sendProgress(faceError);
-    } else {
-      try {
-        sendProgress("▶ Macro face shot — preparing reference...");
-        const refUri = await refToDataUri(fullPath);
-        const [fw, fh] = NANOBANANA_SIZES["4:5"]["2k"];
-        facePath = await runwareGenerateToFile({
-          model: "google:4@3",
-          prompt: MACRO_FACE_PROMPT,
-          width: fw,
-          height: fh,
-          referenceImages: [refUri],
-          apiKey: runwareKey,
-          destDir: dir,
-          baseName: `${sku}_FACE`,
-          sendProgress
-        });
-      } catch (err) {
-        faceError = err instanceof Error ? err.message : String(err);
-        sendProgress(`Face macro failed — ${faceError}`);
-      }
+    try {
+      sendProgress("▶ Macro face shot...");
+      facePath = await higgsfieldGenerateToFile({
+        jobType: "nano_banana_pro",
+        params: { prompt: MACRO_FACE_PROMPT, aspect_ratio: "4:5", resolution: "2k", image_references: [fullPath] },
+        destDir: dir,
+        baseName: `${sku}_FACE`,
+        sendProgress
+      });
+    } catch (err) {
+      faceError = err instanceof Error ? err.message : String(err);
+      sendProgress(`Face macro failed — ${faceError}`);
     }
     if (facePath) sendProgress(`${sku} complete ✓ — full body + face macro`);
     return { success: true, sku, outputPath: fullPath, facePath, error: faceError };
@@ -840,19 +741,9 @@ handleWhenUnlocked("fire-model", async (event, { prompt, engine, aspectRatio, re
     reservedSkus.delete(sku);
   }
 });
-const VIDEO_MODELS = {
-  "seedance-2": "bytedance:seedance@2.0",
-  "seedance-2-fast": "bytedance:seedance@2.0-fast"
-};
-const VIDEO_SIZES = {
-  "16:9": { "720p": [1280, 720], "1080p": [1920, 1080] },
-  "9:16": { "720p": [720, 1280], "1080p": [1080, 1920] }
-};
 handleWhenUnlocked("fire-video", async (event, { prompt, products: frames, videoModel, aspectRatio, resolution, duration }) => {
   if (typeof prompt !== "string" || prompt.trim().length === 0) throw new Error("Invalid prompt");
   if (!Array.isArray(frames) || frames.length > 9) throw new Error("Invalid frames");
-  const apiKey = process.env.RUNWARE_API_KEY;
-  if (!apiKey) throw new Error("RUNWARE_API_KEY not set — add it to ~/.bmp.env");
   const timestamp = Date.now();
   const desktopPath = loadPrefs().outputPath;
   const sendProgress = (line) => event.sender.send("higgsfield-progress", { scope: "video", line });
@@ -861,45 +752,21 @@ handleWhenUnlocked("fire-video", async (event, { prompt, products: frames, video
   if (maxTag > frames.length) {
     sendProgress(`Warning: prompt references @Image${maxTag} but only ${frames.length} frame${frames.length !== 1 ? "s" : ""} provided`);
   }
-  let referenceImages = [];
-  if (frames.length > 0) {
-    try {
-      referenceImages = await filesToDataUris(frames, MAX_FRAME_PX, sendProgress);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      sendProgress(msg);
-      return { success: false, outputPath: "", error: msg };
-    }
-  }
   const safeRes = ["720p", "1080p"].includes(resolution) ? resolution : "720p";
-  let vidRatio = aspectRatio === "9:16" ? "9:16" : "16:9";
-  if (aspectRatio === "auto" && frames.length > 0) {
-    try {
-      const img = nativeImage.createFromPath(frames[0]);
-      if (!img.isEmpty()) {
-        const { width, height } = img.getSize();
-        vidRatio = width >= height ? "16:9" : "9:16";
-      }
-    } catch {
-    }
-  }
-  const [vw, vh] = VIDEO_SIZES[vidRatio][safeRes];
-  const model = VIDEO_MODELS[videoModel] ?? VIDEO_MODELS["seedance-2"];
-  const task = {
-    taskType: "videoInference",
-    taskUUID: runwareTaskUUID(),
-    model,
-    positivePrompt: prompt,
-    width: vw,
-    height: vh,
-    duration,
-    settings: { audio: false }
-  };
-  if (referenceImages.length > 0) task.inputs = { referenceImages };
-  sendProgress(`Submitting to Seedance 2 (${aspectRatio} · ${resolution} · ${duration}s)...`);
+  const vidRatio = aspectRatio === "auto" ? "auto" : aspectRatio === "9:16" ? "9:16" : "16:9";
+  const mode = videoModel === "seedance-2-fast" ? "fast" : "std";
+  sendProgress(`Submitting Seedance 2.0 (${aspectRatio} · ${resolution} · ${duration}s)...`);
   try {
-    const result = await runwareGenerate(task, apiKey, sendProgress);
-    const videoUrl = result.videoURL;
+    const job = await higgsfieldGenerate("seedance_2_0", {
+      prompt,
+      aspect_ratio: vidRatio,
+      resolution: safeRes,
+      duration,
+      mode,
+      generate_audio: false,
+      image_references: frames.length > 0 ? frames : void 0
+    }, sendProgress);
+    const videoUrl = job.result_url;
     if (!videoUrl) {
       sendProgress("No video file in response");
       return { success: false, outputPath: "", error: "No video file" };

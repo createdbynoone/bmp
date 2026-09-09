@@ -4,7 +4,7 @@ Electron app para generar prompts de marketing de prendas Brotherhood y disparar
 
 **Dev:** `npm run dev`
 **Release:** `bash scripts/publish.sh` (build local + subida via gh — ver sección Release)
-**Versión actual:** `1.9.0` (2026-08-06: proveedor de imagen/video migrado de POYO a **Runware** — mismos modelos, refs ahora van embebidas como data URI en vez de subirse a una URL hosteada; ver sección Runware API abajo) · (2026-07-24: Image tab migrado a Seedream 5.0 Pro / Nano Banana Pro — Higgsfield CLI removido, ratios 4:5/9:16 only; RAM más liviana — sin GPU process, sin spellcheck, sin background networking de Chromium; ventana con tamaño dinámico por pantalla y zoomFactor 0.95)
+**Versión actual:** `1.12.0` (2026-09-09: proveedor de imagen/video migrado de Runware a **Higgsfield** — vía el CLI oficial `@higgsfield/cli` como subproceso, no API key propia; mismos 4 modelos ahora servidos directo por Higgsfield (Seedream 5.0 Pro, Nano Banana Pro, Recraft V4.1, Seedance 2.0); ver sección Higgsfield CLI abajo) · (2026-08-06: proveedor migrado de POYO a Runware) · (2026-07-24: Image tab migrado a Seedream 5.0 Pro / Nano Banana Pro — Higgsfield CLI standalone removido en ese momento, reintroducido en v1.12.0 como backend; ratios 4:5/9:16 only; RAM más liviana — sin GPU process, sin spellcheck, sin background networking de Chromium; ventana con tamaño dinámico por pantalla y zoomFactor 0.95)
 
 ## Lock screen + seguridad (v1.6.0, 2026-07-07)
 - Primer arranque en una máquina pide passphrase (`brother*1998_hood`, mismo patrón que Brotherhood Canvas/Sorter/Product Builder) antes de tocar filesystem/API keys — scrypt hash+salt propios en `main.ts`, nunca el texto plano; `timingSafeEqual`; backoff exponencial persistido en `bmp-prefs.json`
@@ -24,55 +24,50 @@ Electron app para generar prompts de marketing de prendas Brotherhood y disparar
 
 ## Modos
 
-### Image (`[SEEDREAM | NB PRO]`) — Higgsfield CLI removido, Runware-only (2026-07-24; proveedor migrado de POYO a Runware 2026-08-06)
+### Image (`[SEEDREAM | NB PRO]`) — vía Higgsfield (2026-09-09; antes Runware)
 Ratios unificados para ambos providers: **4:5 / 9:16** (default 4:5)
-| Provider | Modelo (Runware AIR id) | Resoluciones | Refs max | Variaciones |
+| Provider | job_type Higgsfield | Resoluciones | Refs max | Variaciones |
 |---|---|---|---|---|
-| SEEDREAM | `bytedance:seedream@5.0-pro` | 1K / 2K | 10 | ×1–4 |
-| NB PRO (default) | `google:4@2` | 1K / 2K / 4K | 14 | ×1–4 |
+| SEEDREAM | `seedream_v5_pro` | 1K / 2K | 10 | ×1–4 |
+| NB PRO (default) | `nano_banana_pro` | 1K / 2K / 4K | 14 | ×1–4 |
 
-Runware no distingue modelo edit vs text-to-image — mismo AIR id, la diferencia es si `inputs.referenceImages` viene poblado. Runware acepta refs como data URI directamente (sin upload previo a una URL), así que `upload-poyo-refs` ahora solo redimensiona/codifica en base64 — el nombre del IPC quedó igual por compat con preload/renderer, ya no sube nada a POYO. Para disparos paralelos (variaciones) las refs se preparan UNA vez via `upload-poyo-refs` y las data URIs se comparten (`imageUrls` en `fire-poyo-image`) — re-codificar por tarea desperdicia trabajo.
+Un solo job_type sirve texto→imagen e imagen→imagen — la diferencia es si `image_references` viene poblado. `image_references` acepta paths locales directamente (`generate create` los auto-sube), así que `upload-poyo-refs` llama `higgsfield upload create <path>` una vez por archivo y comparte los upload-ids devueltos entre disparos paralelos (variaciones) — el nombre del IPC quedó igual por compat con preload/renderer. Sin ese pre-upload, `fire-poyo-image` pasa los paths crudos y deja que el CLI los suba él mismo.
 
 ### Model (`[NB2 | RECRAFT]`) — creación de modelos de IA (2026-07-10)
 - El usuario PEGA el prompt manualmente (Claude no lo genera); sin imágenes de referencia
-- Engines: NB2 (Runware `google:4@3` text→image, 1K/2K/4K) o **Recraft v4.1 Pro** (`recraftv4_1_pro`, siempre 4MP)
-- **Pipeline completo en IPC `fire-model`** (main.ts): asigna SKU → genera full body → dispara automáticamente un **macro face shot** con Nano Banana 2 (`google:4@3`, referenceImages con el render recién generado) usando el render recién generado como referencia de identidad (misma cara) y el preset `MACRO_FACE_PROMPT` (gender-neutral, 4:5 · 2K)
+- Engines: NB2 (Higgsfield `nano_banana_pro`, 1K/2K/4K) o **Recraft V4.1** (Higgsfield `recraft_v4_1`, 1K/2K)
+- **Pipeline completo en IPC `fire-model`** (main.ts): asigna SKU → genera full body → dispara automáticamente un **macro face shot** con `nano_banana_pro` (`image_references: [fullPath]`) usando el render recién generado como referencia de identidad (misma cara) y el preset `MACRO_FACE_PROMPT` (gender-neutral, 4:5 · 2K)
 - **SKU + carpetas**: `SMF###` (female) / `SMM###` (male) en `/Volumes/Sandisk Home/Brotherhood/IA/Modelos/SMF|SMM/<SKU>/` con `<SKU>.<ext>` + `<SKU>_FACE.<ext>`; numeración auto-incremental escaneando la carpeta + `reservedSkus` (Set) contra carreras de fires paralelos; si la generación principal falla se hace `rmdirSync` del folder vacío
 - Toggle `SMF | SMM` en la barra inferior con auto-detección de género desde el prompt (`detectGender` en App.tsx — "woman" nunca matchea `\bman\b`); el toggle siempre puede overridear
-- Recraft API: `POST https://external.api.recraft.ai/v1/images/generations` (OpenAI-style, Bearer `RECRAFT_API_KEY`), respuesta `{ data: [{ url }] }`; tamaños pro en `RECRAFT_SIZES` (9:16→1536x2688, 4:5→1792x2304, 1:1→2048x2048, 16:9→2688x1536)
-- **NO enviar `style`** — v4.1 Pro lo rechaza (`invalid_image_type`); el default ya es fotorealista
-- La URL del resultado no trae extensión y sirve **WebP** — se descarga a `.download` y se renombra según magic bytes; para usar un WebP como ref se convierte antes a JPEG con `sips` (`refToDataUri` — nativeImage no decodifica WebP)
 - Resultados: cards por SKU en `ModelMode.tsx` con FULL + FACE lado a lado y lightbox — main agrega outputs a `knownLocalPaths` para servirlos via `localfile://`
 - Si el face macro falla, el resultado principal se conserva (success parcial con `error` y placeholder "face macro failed" en la card)
 
-### Video (Seedance 2 / Runware)
+### Video (Seedance 2.0 / Higgsfield)
 - El usuario escribe el prompt manualmente
-- Frames drag & drop (max 9) → referenciados con `@Image1`, `@Image2`... → van en `inputs.referenceImages` (no `frameImages`, que en Runware está limitado a 2 y tiene semántica first/last-frame)
-- Modelos (Runware AIR id): `seedance-2` → `bytedance:seedance@2.0` (PRO) / `seedance-2-fast` → `bytedance:seedance@2.0-fast` (FAST)
-- Ratios: 9:16 / 16:9 / auto (con frames, `auto` detecta el ratio del primer frame; sin frames cae a 16:9) | Resoluciones: 720p / 1080p | Duración: 5/10/15s
-- Audio SIEMPRE apagado (`settings: { audio: false }` hardcoded en fire-video; toggle removido de la UI)
+- Frames drag & drop (max 9) → referenciados con `@Image1`, `@Image2`... → van en `image_references` (orden preservado por flags repetidos, no hay semántica first/last-frame salvo que se use `start_image`/`end_image` explícitos, que no se usan aquí)
+- `mode`: `seedance-2` → `std` (PRO) / `seedance-2-fast` → `fast`
+- Ratios: 9:16 / 16:9 / auto (Higgsfield deriva el ratio de los frames server-side cuando es `auto` — sin sniffing local de dimensiones) | Resoluciones: 720p / 1080p | Duración: 5/10/15s
+- Audio SIEMPRE apagado (`generate_audio: false` hardcoded en fire-video; toggle removido de la UI)
 
-## Claves de entorno (`~/.bmp.env`)
+## Higgsfield CLI (migrado de Runware 2026-09-09)
+Sin API key propia — auth es login OAuth de un solo uso con el CLI oficial (`npm i -g @higgsfield/cli`, binario `higgsfield`/`higgs`/`hf`), facturado contra el plan/créditos de la cuenta del usuario. Mismo patrón que `callClaudeCLI` (la CLI de `claude` para prompts), solo que para imagen/video.
 ```
-RUNWARE_API_KEY=...
-RECRAFT_API_KEY=...
+higgsfield auth login                    # OAuth PKCE, abre navegador, guarda ~/.config/higgsfield/credentials.json
+higgsfield workspace set <id>             # necesario una vez — sin esto, todo falla con "No workspace selected"
+higgsfield generate create <job_type> --json [--param=value]... [--image-references=<path o upload-id>]...
+higgsfield generate get <job_id> --json   # poll manual — status: queued → in_progress → completed|failed|nsfw
+higgsfield upload create <path> --json    # sube un archivo, devuelve { id, url } reusable como image_references
+higgsfield account status --json          # { credits, subscription_plan_type }
 ```
-(GEMINI_API_KEY ya no se usa — provider Gemini removido; POYO_API_KEY removida 2026-08-06, migrado a Runware)
+`higgsfieldJSON()`/`higgsfieldGenerate()` en main.ts envuelven esto: `generate create` sin `--wait` (control propio del progreso) → poll `generate get` cada ~3s, 10 min timeout, mismo shape que el polling viejo de Runware. **Los flags van con `=` (`--flag=value`), nunca espacio** — pflag/cobra no consume de forma confiable un `"true"/"false"` separado por espacio en flags booleanos (`generate_audio`, `remove_bg`, `is_inpaint`). Una sesión OAuth recién logueada no tiene workspace seleccionado — `ensureWorkspaceSelected()` autoselecciona el primero (las cuentas solo tienen uno).
 
-## Runware API (migrado de POYO 2026-08-06)
-```
-POST https://api.runware.ai/v1     → body: array de tasks, Authorization: Bearer $RUNWARE_API_KEY
-  { taskType: "imageInference" | "videoInference", taskUUID, model, positivePrompt, width, height, inputs?: { referenceImages: [dataURI...] } }
-  { taskType: "getResponse", taskUUID }   → poll para tasks que no resuelven sync
-```
-Respuesta trae `data[].imageURL` / `data[].videoURL` cuando termina; `data[].status` (`processing`/`success`/`error`) mientras se resuelve; errores en el array top-level `errors[]`. Refs van embebidas como `data:image/jpeg;base64,...` — no hay endpoint de upload separado. Modelos no tienen variante `-edit`: el mismo AIR id sirve texto→imagen e imagen→imagen, la diferencia es si `inputs.referenceImages` viene poblado. `resolution` (1K/2K/4K) como preset solo funciona con referencia — para texto→imagen se calculan `width`/`height` explícitos por ratio (tablas `NANOBANANA_SIZES`/`SEEDREAM_SIZES`/`VIDEO_SIZES` en main.ts).
-
-**Nano Banana Pro/2 (`google:4@2`/`google:4@3`) solo aceptan una whitelist fija de pares width×height** — dimensiones arbitrarias (aunque respeten el aspect ratio) tiran `"Unsupported use of width/height parameters"` con la lista completa en el mensaje de error. `NANOBANANA_SIZES` usa los valores exactos de esa whitelist (v1.9.1, 2026-08-06, bug real en producción: los valores calculados a mano — 1792×2240 para 4:5 2K — no estaban en la lista, la real es 1856×2304). Seedream 5.0 Pro sí acepta dimensiones custom dentro de su rango de píxeles totales, no tiene esta restricción.
+Job types usados por BMP y sus params clave (`higgsfield model get <job_type>` para el schema completo): `seedream_v5_pro` (aspect_ratio, resolution 1k/1.5k/2k, image_references max 10), `nano_banana_pro` (aspect_ratio, resolution 1k/2k/4k, image_references max 14), `recraft_v4_1` (aspect_ratio, resolution 1k/2k, model_type — sin soporte de referencia), `seedance_2_0` (aspect_ratio incluye `auto`, resolution hasta 4k, mode std/fast, duration 4-15s, image_references + start_image/end_image, generate_audio).
 
 ## Shared utilities (main.ts)
-- `fileToDataUri` / `filesToDataUris` — resize 1280px JPEG 90% → data URI base64 (reemplaza el upload a POYO)
-- `runwareRequest` / `runwareGenerate` — POST del array de tasks; si no resuelve sync, cae a `pollRunwareTask`
-- `pollRunwareTask` — 3s wait inicial, 5s interval via `getResponse`, log solo en cambio de status, timeout 10 min
+- `higgsfieldJSON` — `execFile('higgsfield', [...args, '--json'])`, parsea stdout
+- `hfArgs` — serializa un objeto de params a `--flag=value` (arrays → flag repetido, orden preservado)
+- `higgsfieldGenerate` — `generate create` (sin --wait) → poll `generate get` hasta `completed`/`failed`/`nsfw`
+- `higgsfieldGenerateToFile` — corre `higgsfieldGenerate` y descarga `result_url` a `destDir/baseName.<ext>`
 
 ## Preload — CRÍTICO
 Debe compilar como **CJS** (`.cjs`). Con `sandbox: true`, ES modules en preload → `window.bmp` undefined.
@@ -93,11 +88,13 @@ preload: join(__dirname, '../preload/preload.cjs')
 ## IPC handlers (main.ts)
 - `generate-prompt` — Claude Sonnet 5 vía CLI (`claude -p --tools Read`, no SDK) → prompt. `callClaudeCLI` usa `--output-format stream-json` para contar qué paths tocó el Read tool y comparar contra las imágenes enviadas; si alguna quedó sin leer, revienta con error explícito en vez de devolver un prompt que nunca vio esa referencia (v1.11.0, 2026-08-20: bug real en producción — un nombre de archivo tipo captura de pantalla macOS con paréntesis/puntos hacía que Claude no la leyera, y con `--output-format json` eso pasaba silencioso)
 - `stage-dropped-files` — copia cada archivo soltado a `$TMPDIR/bmp-staged-refs/imageN.ext` antes de que su path llegue a `refs`/`products`; Claude nunca ve el nombre original (evita bias por nombre descriptivo/basura y el mismatch NFC/NFD de tildes en macOS). Reset del contador + carpeta en cada arranque (`resetStagingDir` en `app.whenReady`)
-- `fire-poyo-image` — Runware Seedream 5.0 Pro / Nano Banana Pro (acepta `provider` + `imageUrls` pre-preparadas; nombre del canal quedó igual por compat, ya no habla con POYO)
-- `fire-model` — pipeline Model completo (SKU + full body + macro face; NB2 vía Runware o Recraft)
-- `upload-poyo-refs` — prepara refs como data URI una vez, retorna para fan-out paralelo (nombre legado, ver arriba)
-- `fire-video` — Runware Seedance 2
-- `check-higgsfield-auth` — verifica RUNWARE_API_KEY presente
+- `fire-poyo-image` — Higgsfield Seedream 5.0 Pro / Nano Banana Pro (acepta `provider` + `imageUrls` pre-preparadas; nombre del canal quedó igual por compat, viene de la era POYO)
+- `fire-model` — pipeline Model completo (SKU + full body + macro face; NB2 o Recraft, ambos vía Higgsfield)
+- `upload-poyo-refs` — sube refs una vez vía `higgsfield upload create`, retorna upload-ids para fan-out paralelo (nombre legado, ver arriba)
+- `fire-video` — Higgsfield Seedance 2.0
+- `check-higgsfield-auth` — existe `~/.config/higgsfield/credentials.json` + workspace seleccionable
+- `higgsfield-login` — corre `higgsfield auth login` (abre navegador) y autoselecciona workspace
+- `get-higgsfield-credits` — `higgsfield account status`
 - `get-output-path` / `set-output-path` / `open-folder-dialog`
 - `get-memory-stats` / `get-memory-entries` / `mark-prompt-fired`
 

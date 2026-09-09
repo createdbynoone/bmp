@@ -1,10 +1,10 @@
 import { app, BrowserWindow, ipcMain, shell, nativeImage, protocol, net, Menu, dialog, screen } from 'electron'
 import { join, dirname, extname } from 'path'
-import { readFileSync, writeFileSync, createWriteStream, renameSync, mkdirSync, readdirSync, unlinkSync, rmdirSync, rmSync, copyFileSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, createWriteStream, mkdirSync, readdirSync, rmdirSync, rmSync, copyFileSync, existsSync } from 'fs'
 import { homedir } from 'os'
 import { execFile, exec, spawn } from 'child_process'
 import { promisify } from 'util'
-import { scryptSync, timingSafeEqual, randomUUID } from 'crypto'
+import { scryptSync, timingSafeEqual } from 'crypto'
 import https from 'https'
 import electronUpdater from 'electron-updater'
 const { autoUpdater } = electronUpdater
@@ -18,7 +18,7 @@ app.disableHardwareAcceleration()
 // Chromium's own background services (Safe Browsing pings, component/variations
 // updates, media session discovery) — irrelevant to a local tool, not used by
 // any app feature, safe to strip. Does not touch our own fetch()/CLI calls to
-// Claude/Runware, which the main process makes directly on demand.
+// Claude/Higgsfield, which the main process makes directly on demand.
 app.commandLine.appendSwitch('disable-background-networking')
 app.commandLine.appendSwitch('disable-features', 'MediaRouter,OptimizationGuideModelDownloading,Translate')
 
@@ -99,7 +99,7 @@ function requireUnlocked(): void {
 
 // Every handler below requires the passphrase to have been entered once on
 // this machine — without this, a renderer that skips the LockScreen UI
-// (e.g. via devtools) still can't reach the filesystem or the Runware key.
+// (e.g. via devtools) still can't reach the filesystem or the Higgsfield session.
 function handleWhenUnlocked<Args extends unknown[], R>(
   channel: string,
   fn: (event: Electron.IpcMainInvokeEvent, ...args: Args) => R,
@@ -358,6 +358,90 @@ function loadEnv() {
 
 loadEnv()
 
+// ─── Higgsfield CLI ─────────────────────────────────────────────────────────
+// Image/video generation goes through the official `higgsfield` CLI (npm
+// @higgsfield/cli) instead of a bundled API key — auth is a one-time OAuth
+// browser login (`higgsfield auth login`), billed against the user's own
+// Higgsfield plan/credits. Same subprocess-CLI pattern as callClaudeCLI below,
+// just for image/video instead of text. Every call appends --json and parses
+// stdout; the binary itself resolves/refreshes the OAuth session stored in
+// ~/.config/higgsfield/credentials.json — nothing to keep in ~/.bmp.env.
+const HF_BIN = 'higgsfield'
+
+function higgsfieldCredentialsPath(): string {
+  return join(homedir(), '.config', 'higgsfield', 'credentials.json')
+}
+
+async function higgsfieldJSON(args: string[]): Promise<any> {
+  const { stdout } = await execFileAsync(HF_BIN, [...args, '--json'], { env: shellEnv(), maxBuffer: 1024 * 1024 * 32 })
+  return JSON.parse(stdout)
+}
+
+// A fresh OAuth login has no workspace selected yet, and every generate/model
+// call errors with "No workspace selected" until one is. Solo accounts only
+// ever have one, so auto-select it instead of surfacing a setup step.
+async function ensureWorkspaceSelected(): Promise<void> {
+  const status = await higgsfieldJSON(['workspace', 'status']).catch(() => null)
+  if (status?.id) return
+  const workspaces = await higgsfieldJSON(['workspace', 'list']) as Array<{ id: string }>
+  if (workspaces.length > 0) {
+    await execFileAsync(HF_BIN, ['workspace', 'set', workspaces[0].id], { env: shellEnv() })
+  }
+}
+
+interface HFJob {
+  id: string
+  status: string
+  result_url: string | null
+  min_result_url: string | null
+}
+
+// Serializes a params object into `--flag-name=value` CLI args (each array
+// entry becomes its own repeated flag, order preserved — matters for @ImageN
+// references in video prompts). The `=` form is required: pflag/cobra bool
+// flags don't reliably consume a space-separated "true"/"false" token.
+function hfArgs(params: Record<string, unknown>): string[] {
+  const args: string[] = []
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null) continue
+    const flag = `--${key.replace(/_/g, '-')}`
+    if (Array.isArray(value)) {
+      for (const v of value) args.push(`${flag}=${v}`)
+    } else {
+      args.push(`${flag}=${value}`)
+    }
+  }
+  return args
+}
+
+// Create a Higgsfield generation job and poll it to completion — submit via
+// `generate create` (no --wait, so we control progress reporting), then poll
+// `generate get` every ~3s (10 min timeout), same shape the old Runware
+// getResponse polling used.
+async function higgsfieldGenerate(
+  jobType: string, params: Record<string, unknown>, sendProgress: (l: string) => void,
+): Promise<HFJob> {
+  const ids = await higgsfieldJSON(['generate', 'create', jobType, ...hfArgs(params)]) as string[]
+  const jobId = ids[0]
+  if (!jobId) throw new Error('Higgsfield: no job id returned')
+
+  let lastStatus = ''
+  const startTs = Date.now()
+  for (let i = 0; i < 200; i++) {
+    await new Promise((r) => setTimeout(r, i === 0 ? 2000 : 3000))
+    const job = await higgsfieldJSON(['generate', 'get', jobId]) as HFJob
+    const elapsed = Math.round((Date.now() - startTs) / 1000)
+    if (job.status !== lastStatus) {
+      sendProgress(`${job.status} · ${elapsed}s`)
+      lastStatus = job.status
+    }
+    if (job.status === 'completed') return job
+    if (job.status === 'failed') throw new Error('Higgsfield: generation failed (credits refunded)')
+    if (job.status === 'nsfw') throw new Error('Higgsfield: rejected by content moderation (credits refunded)')
+  }
+  throw new Error('Timeout — job exceeded 10 minutes')
+}
+
 const CLAUDE_MODEL = 'claude-sonnet-5'
 
 const SYSTEM_PROMPT = `You are a specialist in generating NanaBanana2 (Higgsfield) prompts for Brotherhood streetwear marketing/editorial photography. Brotherhood is a Colombian streetwear brand with a bold, authentic aesthetic.
@@ -554,11 +638,23 @@ handleWhenUnlocked('get-memory-entries', () => {
 })
 
 handleWhenUnlocked('check-higgsfield-auth', async () => {
-  return { authenticated: !!process.env.RUNWARE_API_KEY }
+  if (!existsSync(higgsfieldCredentialsPath())) return { authenticated: false }
+  try {
+    await ensureWorkspaceSelected()
+    return { authenticated: true }
+  } catch {
+    return { authenticated: false }
+  }
 })
 
 handleWhenUnlocked('higgsfield-login', async () => {
-  return { ok: false, error: 'Add RUNWARE_API_KEY to ~/.bmp.env' }
+  try {
+    await execFileAsync(HF_BIN, ['auth', 'login'], { env: shellEnv(), timeout: 120000 })
+    await ensureWorkspaceSelected()
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
 })
 
 function downloadFile(url: string, destPath: string): Promise<void> {
@@ -616,145 +712,44 @@ function downloadDmgWithProgress(
 }
 
 handleWhenUnlocked('get-higgsfield-credits', async () => {
-  return { credits: null, plan: 'nano-banana-2' }
+  try {
+    const status = await higgsfieldJSON(['account', 'status']) as { credits: number; subscription_plan_type: string }
+    return { credits: status.credits, plan: status.subscription_plan_type }
+  } catch {
+    return { credits: null, plan: null }
+  }
 })
 
-// ── Runware shared utilities ────────────────────────────────────────────────
-
-const MAX_FRAME_PX = 1280
-const RUNWARE_API_URL = 'https://api.runware.ai/v1'
-
-function runwareTaskUUID(): string {
-  return randomUUID()
-}
-
-async function runwareRequest(
-  tasks: Record<string, unknown>[], apiKey: string,
-): Promise<{ data: Array<Record<string, unknown>>; errors: Array<{ message?: string }> }> {
-  const res = await fetch(RUNWARE_API_URL, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(tasks),
-  })
-  const json = await res.json() as { data?: Array<Record<string, unknown>>; errors?: Array<{ message?: string }> }
-  const errors = json.errors ?? []
-  if (!res.ok && errors.length === 0) throw new Error(`HTTP ${res.status}`)
-  return { data: json.data ?? [], errors }
-}
-
-// Poll a Runware task via getResponse until it resolves to a final result
-async function pollRunwareTask(
-  taskUUID: string, apiKey: string, sendProgress: (l: string) => void,
-): Promise<Record<string, unknown>> {
-  let lastStatus = ''; let lastPct = -1
-  const startTs = Date.now()
-  for (let i = 0; i < 120; i++) {
-    await new Promise((r) => setTimeout(r, i === 0 ? 3000 : 5000))
-    const { data, errors } = await runwareRequest([{ taskType: 'getResponse', taskUUID }], apiKey)
-    if (errors.length > 0) throw new Error(errors[0].message ?? 'Runware error')
-    const task = data[0]
-    if (!task) continue
-    const status = String(task.status ?? '')
-    const pct = Number(task.progress ?? 0)
-    const elapsed = Math.round((Date.now() - startTs) / 1000)
-    if (status !== lastStatus || pct !== lastPct) {
-      sendProgress(`${status || 'processing'}${pct > 0 ? ` ${pct}%` : ''} · ${elapsed}s`)
-      lastStatus = status; lastPct = pct
-    }
-    if (task.imageURL || task.videoURL || status === 'success') return task
-    if (status === 'error') throw new Error('Runware: generation failed')
-  }
-  throw new Error('Timeout — task exceeded 10 minutes')
-}
-
-// Submit a Runware task; return immediately if it resolves synchronously,
-// otherwise poll getResponse until the final result is ready
-async function runwareGenerate(
-  task: Record<string, unknown>, apiKey: string, sendProgress: (l: string) => void,
-): Promise<Record<string, unknown>> {
-  const { data, errors } = await runwareRequest([task], apiKey)
-  if (errors.length > 0) throw new Error(errors[0].message ?? 'Runware error')
-  const result = data[0]
-  if (!result) throw new Error('Empty Runware response')
-  if (result.imageURL || result.videoURL) return result
-  return pollRunwareTask(task.taskUUID as string, apiKey, sendProgress)
-}
-
-// Resize + base64-encode a local file into a data: URI for Runware referenceImages/frameImages
-async function fileToDataUri(filePath: string, maxPx: number): Promise<string> {
-  try {
-    const img = nativeImage.createFromPath(filePath)
-    if (!img.isEmpty()) {
-      const { width, height } = img.getSize()
-      const scale = Math.min(1, maxPx / Math.max(width, height))
-      const resized = scale < 1
-        ? img.resize({ width: Math.round(width * scale), height: Math.round(height * scale), quality: 'best' })
-        : img
-      return `data:image/jpeg;base64,${resized.toJPEG(90).toString('base64')}`
-    }
-  } catch {}
-  const raw = readFileSync(filePath)
-  const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
-  const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif' : 'image/jpeg'
-  return `data:${mime};base64,${raw.toString('base64')}`
-}
-
-// Prepare multiple files in parallel, preserving order (critical for @Image index alignment)
-async function filesToDataUris(filePaths: string[], maxPx: number, sendProgress: (l: string) => void): Promise<string[]> {
-  if (filePaths.length === 0) return []
-  sendProgress(`Preparing ${filePaths.length} image${filePaths.length > 1 ? 's' : ''}...`)
-  const uris = await Promise.all(filePaths.map((f) => fileToDataUri(f, maxPx)))
-  sendProgress(`${filePaths.length} image${filePaths.length > 1 ? 's' : ''} ready ✓`)
-  return uris
-}
-
-// ── Runware image generation — Seedream 5.0 Pro / Nano Banana Pro ──────────────
+// ── Higgsfield image generation — Seedream 5.0 Pro / Nano Banana Pro ───────────
 
 const IMAGE_RATIOS = ['4:5', '9:16'] as const
 // Model tab (fire-model, NB2/Recraft) keeps the full ratio set — unaffected by
 // the Image tab's 4:5/9:16-only restriction above
 const MODEL_RATIOS = ['9:16', '4:5', '1:1', '16:9'] as const
-const RUNWARE_MAX_REFS = 14 // shared upload-refs cap; per-provider cap enforced below
 
-// Explicit pixel dimensions per aspect ratio + resolution tier. Runware's
-// "resolution" preset only auto-derives aspect ratio from a reference image,
-// so text-to-image (no refs) needs literal width/height — using explicit
-// sizes everywhere keeps both paths consistent.
-// Nano Banana Pro/2 only accept an enumerated whitelist of width×height pairs
-// per aspect ratio (arbitrary dimensions error with "Unsupported use of
-// width/height parameters") — these are the exact values from that whitelist.
-const NANOBANANA_SIZES: Record<string, Record<string, [number, number]>> = {
-  '1:1':  { '1k': [1024, 1024], '2k': [2048, 2048], '4k': [4096, 4096] },
-  '4:5':  { '1k': [928, 1152],  '2k': [1856, 2304], '4k': [3712, 4608] },
-  '9:16': { '1k': [768, 1376],  '2k': [1536, 2752], '4k': [3072, 5504] },
-  '16:9': { '1k': [1376, 768],  '2k': [2752, 1536], '4k': [5504, 3072] },
-}
-const SEEDREAM_SIZES: Record<string, Record<string, [number, number]>> = {
-  '4:5':  { '1k': [896, 1120], '2k': [1792, 2240] },
-  '9:16': { '1k': [768, 1360], '2k': [1536, 2720] },
-}
-
-// Per-provider AIR model id, resolution ceiling and reference-image cap —
-// Seedream 5.0 Pro on Runware only exposes 1K/2K and 10 refs, Nano Banana Pro
-// goes up to native 4K with 14 refs
+// Per-provider Higgsfield job_type, resolution ceiling and reference-image
+// cap — straight from `higgsfield model get <job_type>`
 const IMAGE_PROVIDERS = {
-  seedream: { model: 'bytedance:seedream@5.0-pro', resolutions: ['1k', '2k'], sizes: SEEDREAM_SIZES, maxRefs: 10 },
-  nanobanana: { model: 'google:4@2', resolutions: ['1k', '2k', '4k'], sizes: NANOBANANA_SIZES, maxRefs: 14 },
+  seedream: { jobType: 'seedream_v5_pro', resolutions: ['1k', '2k'], maxRefs: 10 },
+  nanobanana: { jobType: 'nano_banana_pro', resolutions: ['1k', '2k', '4k'], maxRefs: 14 },
 } as const
 type ImageProvider = keyof typeof IMAGE_PROVIDERS
 
-// Prepare product refs once as data URIs — used to fan out multiple
-// generations (variations) without re-encoding the same images per task
+// Upload reference images once and reuse the returned upload ids across a
+// fanned-out batch of variations, instead of re-uploading the same files per task
 handleWhenUnlocked('upload-poyo-refs', async (event, { products }: { products: string[] }) => {
   if (!Array.isArray(products)) throw new Error('Invalid products')
 
   const sendProgress = (line: string) => event.sender.send('higgsfield-progress', { scope: 'image', line })
+  const MAX_REFS = 14
   let files = products
-  if (files.length > RUNWARE_MAX_REFS) {
-    sendProgress(`Runware accepts max ${RUNWARE_MAX_REFS} reference images — using the first ${RUNWARE_MAX_REFS}`)
-    files = files.slice(0, RUNWARE_MAX_REFS)
+  if (files.length > MAX_REFS) {
+    sendProgress(`Higgsfield accepts max ${MAX_REFS} reference images — using the first ${MAX_REFS}`)
+    files = files.slice(0, MAX_REFS)
   }
-  const urls = await filesToDataUris(files, MAX_FRAME_PX, sendProgress)
+  sendProgress(`Uploading ${files.length} image${files.length > 1 ? 's' : ''}...`)
+  const urls = await Promise.all(files.map((f) => higgsfieldJSON(['upload', 'create', f]).then((r) => r.id as string)))
+  sendProgress(`${files.length} image${files.length > 1 ? 's' : ''} ready ✓`)
   return { urls }
 })
 
@@ -765,9 +760,6 @@ handleWhenUnlocked('fire-poyo-image', async (event, { prompt, products, aspectRa
   if (!Array.isArray(products)) throw new Error('Invalid products')
   if (presetUrls !== undefined && (!Array.isArray(presetUrls) || presetUrls.some((u) => typeof u !== 'string'))) throw new Error('Invalid imageUrls')
 
-  const apiKey = process.env.RUNWARE_API_KEY
-  if (!apiKey) throw new Error('RUNWARE_API_KEY not set — add it to ~/.bmp.env')
-
   const providerKey: ImageProvider = provider === 'seedream' ? 'seedream' : 'nanobanana'
   const providerCfg = IMAGE_PROVIDERS[providerKey]
 
@@ -777,35 +769,25 @@ handleWhenUnlocked('fire-poyo-image', async (event, { prompt, products, aspectRa
   const safeSize = IMAGE_RATIOS.includes(aspectRatio as typeof IMAGE_RATIOS[number]) ? aspectRatio : '4:5'
   const allowedResolutions: readonly string[] = providerCfg.resolutions
   const safeRes = (allowedResolutions.includes(resolution) ? resolution : allowedResolutions[allowedResolutions.length - 1]).toLowerCase()
-  const [width, height] = providerCfg.sizes[safeSize][safeRes]
 
-  // Use pre-prepared reference data URIs when provided; otherwise prepare now (max per-provider cap)
-  let imageUris: string[] = (presetUrls ?? []).slice(0, providerCfg.maxRefs)
-  if (imageUris.length === 0 && products.length > 0) {
-    let files = products
-    if (files.length > providerCfg.maxRefs) {
+  // Reuse pre-uploaded reference ids when provided; otherwise pass local
+  // paths straight through — `generate create` auto-uploads any local path
+  let refs: string[] = (presetUrls ?? []).slice(0, providerCfg.maxRefs)
+  if (refs.length === 0 && products.length > 0) {
+    if (products.length > providerCfg.maxRefs) {
       sendProgress(`${providerKey === 'seedream' ? 'Seedream' : 'Nano Banana Pro'} accepts max ${providerCfg.maxRefs} reference images — using the first ${providerCfg.maxRefs}`)
-      files = files.slice(0, providerCfg.maxRefs)
     }
-    try {
-      imageUris = await filesToDataUris(files, MAX_FRAME_PX, sendProgress)
-    } catch (err) {
-      sendProgress(err instanceof Error ? err.message : String(err))
-      return { success: false, outputPath: '', error: String(err) }
-    }
+    refs = products.slice(0, providerCfg.maxRefs)
   }
 
-  sendProgress(`Submitting ${providerCfg.model} (${safeSize} · ${safeRes.toUpperCase()})...`)
-
-  const task: Record<string, unknown> = {
-    taskType: 'imageInference', taskUUID: runwareTaskUUID(), model: providerCfg.model,
-    positivePrompt: prompt, width, height,
-  }
-  if (imageUris.length > 0) task.inputs = { referenceImages: imageUris }
+  sendProgress(`Submitting ${providerCfg.jobType} (${safeSize} · ${safeRes.toUpperCase()})...`)
 
   try {
-    const result = await runwareGenerate(task, apiKey, sendProgress)
-    const url = result.imageURL as string | undefined
+    const job = await higgsfieldGenerate(providerCfg.jobType, {
+      prompt, aspect_ratio: safeSize, resolution: safeRes,
+      image_references: refs.length > 0 ? refs : undefined,
+    }, sendProgress)
+    const url = job.result_url
     if (!url) { sendProgress('No image in response'); return { success: false, outputPath: '', error: 'No image file' } }
     const ext = url.split('.').pop()?.split('?')[0] ?? 'jpg'
     const outputName = `bmp_${timestamp}.${ext}`
@@ -829,14 +811,6 @@ handleWhenUnlocked('fire-poyo-image', async (event, { prompt, products, aspectRa
 // ── Model tab — AI model creation: SKU folders + auto macro face shot ──────────
 
 const MODELS_DIR = '/Volumes/Sandisk Home/Brotherhood/IA/Modelos'
-
-// Recraft v4.1 Pro (4MP) supported sizes, mapped from the app's aspect ratios
-const RECRAFT_SIZES: Record<string, string> = {
-  '9:16': '1536x2688',
-  '4:5': '1792x2304',
-  '1:1': '2048x2048',
-  '16:9': '2688x1536',
-}
 
 // Preset macro prompt for the automatic face shot — gender-neutral, anchored to
 // the reference image so nano-banana-2-edit preserves the generated identity
@@ -866,14 +840,6 @@ function allocateSku(gender: 'female' | 'male'): { sku: string; dir: string } {
   return { sku, dir }
 }
 
-function sniffImageExt(path: string): string {
-  const head = readFileSync(path).subarray(0, 4)
-  return head.toString('latin1') === 'RIFF' ? 'webp'
-    : head[0] === 0x89 && head[1] === 0x50 ? 'png'
-    : head[0] === 0xff && head[1] === 0xd8 ? 'jpg'
-    : 'png'
-}
-
 async function sendSavedLine(outputPath: string, sendProgress: (l: string) => void) {
   const name = outputPath.split('/').pop() ?? outputPath
   try {
@@ -883,78 +849,22 @@ async function sendSavedLine(outputPath: string, sendProgress: (l: string) => vo
   } catch { sendProgress(`Saved: ${name}`) }
 }
 
-// Generate with Recraft v4.1 Pro and save as destDir/baseName.<ext>. Throws on failure.
-async function recraftGenerateToFile(prompt: string, aspectRatio: string, destDir: string, baseName: string, sendProgress: (l: string) => void): Promise<string> {
-  const apiKey = process.env.RECRAFT_API_KEY
-  if (!apiKey) throw new Error('RECRAFT_API_KEY not set — add it to ~/.bmp.env')
-  const size = RECRAFT_SIZES[aspectRatio] ?? RECRAFT_SIZES['4:5']
-
-  sendProgress(`Submitting Recraft v4.1 Pro (${aspectRatio} · ${size})...`)
-  const res = await fetch('https://external.api.recraft.ai/v1/images/generations', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    // No `style` param — Recraft v4.1 Pro rejects it ("doesn't support style
-    // 'realistic_image'"); the model's default is already photorealistic
-    body: JSON.stringify({ prompt, model: 'recraftv4_1_pro', n: 1, size, response_format: 'url' }),
-  })
-  if (!res.ok) {
-    let msg = `HTTP ${res.status}`
-    try {
-      const errBody = await res.json() as { message?: string; error?: { message?: string } }
-      msg = errBody.error?.message ?? errBody.message ?? msg
-    } catch {}
-    throw new Error(msg)
-  }
-  const data = await res.json() as { data?: Array<{ url?: string }> }
-  const imageUrl = data.data?.[0]?.url
-  if (!imageUrl) throw new Error('No image URL in Recraft response')
-
-  sendProgress('Downloading image...')
-  // Recraft URLs carry no file extension — download first, then sniff the
-  // magic bytes for the real format (v4.1 Pro currently serves WebP)
-  const tmpPath = join(destDir, `${baseName}.download`)
-  await downloadFile(imageUrl, tmpPath)
-  const outputPath = join(destDir, `${baseName}.${sniffImageExt(tmpPath)}`)
-  renameSync(tmpPath, outputPath)
-  knownLocalPaths.add(outputPath) // allow the renderer to preview the result
-  await sendSavedLine(outputPath, sendProgress)
-  return outputPath
-}
-
-// Submit a Runware generation, resolve it, and save the image as destDir/baseName.<ext>. Throws on failure.
-async function runwareGenerateToFile(opts: {
-  model: string; prompt: string; width: number; height: number; referenceImages?: string[]
-  apiKey: string; destDir: string; baseName: string; sendProgress: (l: string) => void
+// Run a Higgsfield job and save the result as destDir/baseName.<ext>. Throws on failure.
+async function higgsfieldGenerateToFile(opts: {
+  jobType: string; params: Record<string, unknown>; destDir: string; baseName: string; sendProgress: (l: string) => void
 }): Promise<string> {
-  const { model, prompt, width, height, referenceImages, apiKey, destDir, baseName, sendProgress } = opts
-  const task: Record<string, unknown> = {
-    taskType: 'imageInference', taskUUID: runwareTaskUUID(), model, positivePrompt: prompt, width, height,
-  }
-  if (referenceImages && referenceImages.length > 0) task.inputs = { referenceImages }
-
-  const result = await runwareGenerate(task, apiKey, sendProgress)
-  const url = result.imageURL as string | undefined
+  const { jobType, params, destDir, baseName, sendProgress } = opts
+  const job = await higgsfieldGenerate(jobType, params, sendProgress)
+  const url = job.result_url
   if (!url) throw new Error('No image file in response')
   const urlExt = url.split('.').pop()?.split('?')[0]?.toLowerCase()
   const ext = urlExt && urlExt.length <= 4 ? urlExt : 'jpg'
   const outputPath = join(destDir, `${baseName}.${ext}`)
   sendProgress('Downloading image...')
   await downloadFile(url, outputPath)
-  knownLocalPaths.add(outputPath)
+  knownLocalPaths.add(outputPath) // allow the renderer to preview the result
   await sendSavedLine(outputPath, sendProgress)
   return outputPath
-}
-
-// nativeImage can't decode WebP for encoding — convert via sips first
-async function refToDataUri(path: string): Promise<string> {
-  if (!path.toLowerCase().endsWith('.webp')) return fileToDataUri(path, MAX_FRAME_PX)
-  const tmp = path.replace(/\.webp$/i, '_ref.jpg')
-  await execFileAsync('sips', ['-s', 'format', 'jpeg', '-s', 'formatOptions', '90', path, '--out', tmp])
-  try {
-    return await fileToDataUri(tmp, MAX_FRAME_PX)
-  } finally {
-    try { unlinkSync(tmp) } catch {}
-  }
 }
 
 handleWhenUnlocked('fire-model', async (event, { prompt, engine, aspectRatio, resolution, gender }: {
@@ -966,8 +876,11 @@ handleWhenUnlocked('fire-model', async (event, { prompt, engine, aspectRatio, re
   const safeGender = gender === 'male' ? 'male' as const : 'female' as const
   const safeEngine = engine === 'recraft' ? 'recraft' : 'nb2'
   const safeSize = MODEL_RATIOS.includes(aspectRatio as typeof MODEL_RATIOS[number]) ? aspectRatio : '4:5'
-  const safeRes = ['1k', '2k', '4k'].includes(resolution) ? resolution : '2k'
-  const runwareKey = process.env.RUNWARE_API_KEY
+  const recraftResolutions = ['1k', '2k']
+  const nb2Resolutions = ['1k', '2k', '4k']
+  const safeRes = safeEngine === 'recraft'
+    ? (recraftResolutions.includes(resolution) ? resolution : '2k')
+    : (nb2Resolutions.includes(resolution) ? resolution : '2k')
 
   // 1 — allocate the next SKU folder (SMF### female / SMM### male)
   let sku: string; let dir: string
@@ -985,14 +898,16 @@ handleWhenUnlocked('fire-model', async (event, { prompt, engine, aspectRatio, re
     let fullPath: string
     try {
       if (safeEngine === 'recraft') {
-        fullPath = await recraftGenerateToFile(prompt, safeSize, dir, sku, sendProgress)
+        sendProgress(`Submitting Recraft V4.1 (${safeSize} · ${safeRes.toUpperCase()})...`)
+        fullPath = await higgsfieldGenerateToFile({
+          jobType: 'recraft_v4_1', params: { prompt, aspect_ratio: safeSize, resolution: safeRes },
+          destDir: dir, baseName: sku, sendProgress,
+        })
       } else {
-        if (!runwareKey) throw new Error('RUNWARE_API_KEY not set — add it to ~/.bmp.env')
-        sendProgress(`Submitting Nano Banana 2 (${safeSize} · ${safeRes.toUpperCase()})...`)
-        const [w, h] = NANOBANANA_SIZES[safeSize][safeRes]
-        fullPath = await runwareGenerateToFile({
-          model: 'google:4@3', prompt, width: w, height: h,
-          apiKey: runwareKey, destDir: dir, baseName: sku, sendProgress,
+        sendProgress(`Submitting Nano Banana Pro (${safeSize} · ${safeRes.toUpperCase()})...`)
+        fullPath = await higgsfieldGenerateToFile({
+          jobType: 'nano_banana_pro', params: { prompt, aspect_ratio: safeSize, resolution: safeRes },
+          destDir: dir, baseName: sku, sendProgress,
         })
       }
     } catch (err) {
@@ -1002,26 +917,20 @@ handleWhenUnlocked('fire-model', async (event, { prompt, engine, aspectRatio, re
       return { success: false, sku, outputPath: '', facePath: '', error: msg }
     }
 
-    // 3 — automatic macro face shot: nano-banana-2-edit with the fresh render
+    // 3 — automatic macro face shot: nano_banana_pro with the fresh render
     // as identity reference, so the close-up is the SAME person
     let facePath = ''
     let faceError: string | undefined
-    if (!runwareKey) {
-      faceError = 'RUNWARE_API_KEY not set — face macro skipped'
-      sendProgress(faceError)
-    } else {
-      try {
-        sendProgress('▶ Macro face shot — preparing reference...')
-        const refUri = await refToDataUri(fullPath)
-        const [fw, fh] = NANOBANANA_SIZES['4:5']['2k']
-        facePath = await runwareGenerateToFile({
-          model: 'google:4@3', prompt: MACRO_FACE_PROMPT, width: fw, height: fh, referenceImages: [refUri],
-          apiKey: runwareKey, destDir: dir, baseName: `${sku}_FACE`, sendProgress,
-        })
-      } catch (err) {
-        faceError = err instanceof Error ? err.message : String(err)
-        sendProgress(`Face macro failed — ${faceError}`)
-      }
+    try {
+      sendProgress('▶ Macro face shot...')
+      facePath = await higgsfieldGenerateToFile({
+        jobType: 'nano_banana_pro',
+        params: { prompt: MACRO_FACE_PROMPT, aspect_ratio: '4:5', resolution: '2k', image_references: [fullPath] },
+        destDir: dir, baseName: `${sku}_FACE`, sendProgress,
+      })
+    } catch (err) {
+      faceError = err instanceof Error ? err.message : String(err)
+      sendProgress(`Face macro failed — ${faceError}`)
     }
 
     if (facePath) sendProgress(`${sku} complete ✓ — full body + face macro`)
@@ -1031,25 +940,11 @@ handleWhenUnlocked('fire-model', async (event, { prompt, engine, aspectRatio, re
   }
 })
 
-// Seedance video AIR ids + explicit pixel sizes per aspect ratio/resolution —
-// same reasoning as the image size tables above
-const VIDEO_MODELS: Record<string, string> = {
-  'seedance-2': 'bytedance:seedance@2.0',
-  'seedance-2-fast': 'bytedance:seedance@2.0-fast',
-}
-const VIDEO_SIZES: Record<string, Record<string, [number, number]>> = {
-  '16:9': { '720p': [1280, 720], '1080p': [1920, 1080] },
-  '9:16': { '720p': [720, 1280], '1080p': [1080, 1920] },
-}
-
 handleWhenUnlocked('fire-video', async (event, { prompt, products: frames, videoModel, aspectRatio, resolution, duration }: {
   prompt: string; products: string[]; videoModel: string; aspectRatio: string; resolution: string; duration: number
 }) => {
   if (typeof prompt !== 'string' || prompt.trim().length === 0) throw new Error('Invalid prompt')
   if (!Array.isArray(frames) || frames.length > 9) throw new Error('Invalid frames')
-
-  const apiKey = process.env.RUNWARE_API_KEY
-  if (!apiKey) throw new Error('RUNWARE_API_KEY not set — add it to ~/.bmp.env')
 
   const timestamp = Date.now()
   const desktopPath = loadPrefs().outputPath
@@ -1062,45 +957,21 @@ handleWhenUnlocked('fire-video', async (event, { prompt, products: frames, video
     sendProgress(`Warning: prompt references @Image${maxTag} but only ${frames.length} frame${frames.length !== 1 ? 's' : ''} provided`)
   }
 
-  // Prepare frames in parallel — order is critical (@Image1 = frames[0])
-  let referenceImages: string[] = []
-  if (frames.length > 0) {
-    try {
-      referenceImages = await filesToDataUris(frames, MAX_FRAME_PX, sendProgress)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      sendProgress(msg)
-      return { success: false, outputPath: '', error: msg }
-    }
-  }
-
   const safeRes = ['720p', '1080p'].includes(resolution) ? resolution : '720p'
-  let vidRatio: '16:9' | '9:16' = aspectRatio === '9:16' ? '9:16' : '16:9'
-  if (aspectRatio === 'auto' && frames.length > 0) {
-    try {
-      const img = nativeImage.createFromPath(frames[0])
-      if (!img.isEmpty()) {
-        const { width, height } = img.getSize()
-        vidRatio = width >= height ? '16:9' : '9:16'
-      }
-    } catch {}
-  }
-  const [vw, vh] = VIDEO_SIZES[vidRatio][safeRes]
-  const model = VIDEO_MODELS[videoModel] ?? VIDEO_MODELS['seedance-2']
+  // seedance_2_0 has a real 'auto' aspect_ratio (derives it from the
+  // reference frames server-side) — no local dimension-sniffing needed
+  const vidRatio = aspectRatio === 'auto' ? 'auto' : (aspectRatio === '9:16' ? '9:16' : '16:9')
+  const mode = videoModel === 'seedance-2-fast' ? 'fast' : 'std'
 
-  // Build request task — audio siempre apagado (decisión de producto 2026-07-03)
-  const task: Record<string, unknown> = {
-    taskType: 'videoInference', taskUUID: runwareTaskUUID(), model,
-    positivePrompt: prompt, width: vw, height: vh, duration,
-    settings: { audio: false },
-  }
-  if (referenceImages.length > 0) task.inputs = { referenceImages }
-
-  sendProgress(`Submitting to Seedance 2 (${aspectRatio} · ${resolution} · ${duration}s)...`)
+  sendProgress(`Submitting Seedance 2.0 (${aspectRatio} · ${resolution} · ${duration}s)...`)
 
   try {
-    const result = await runwareGenerate(task, apiKey, sendProgress)
-    const videoUrl = result.videoURL as string | undefined
+    // audio siempre apagado (decisión de producto 2026-07-03)
+    const job = await higgsfieldGenerate('seedance_2_0', {
+      prompt, aspect_ratio: vidRatio, resolution: safeRes, duration, mode, generate_audio: false,
+      image_references: frames.length > 0 ? frames : undefined,
+    }, sendProgress)
+    const videoUrl = job.result_url
     if (!videoUrl) { sendProgress('No video file in response'); return { success: false, outputPath: '', error: 'No video file' } }
     const outputName = `bmp_video_${timestamp}.mp4`
     const outputPath = join(desktopPath, outputName)

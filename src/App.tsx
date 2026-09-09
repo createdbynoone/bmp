@@ -176,7 +176,7 @@ export default function App() {
     window.bmp?.getMemoryStats?.().then((s: { total: number; fired: number }) => setMemoryStats(s))
   }
 
-  // Fire N prompts in parallel with the active provider (both go through Runware).
+  // Fire N prompts in parallel with the active provider (both go through Higgsfield).
   // Product refs are prepared ONCE and shared across tasks — re-encoding the
   // same images per parallel task wastes work (max 14 refs per request)
   const fireBatch = async (prompts: string[]): Promise<number> => {
@@ -503,8 +503,8 @@ export default function App() {
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
           <div className="bg-surface border border-border rounded-xl p-6 w-80 flex flex-col gap-4">
             <div className="flex flex-col gap-1">
-              <span className="font-heading font-bold text-text-primary text-[14.7px] uppercase tracking-widest">Runware Auth</span>
-              <p className="text-[13.7px] text-text-secondary leading-relaxed">Agrega RUNWARE_API_KEY a ~/.bmp.env para continuar.</p>
+              <span className="font-heading font-bold text-text-primary text-[14.7px] uppercase tracking-widest">Higgsfield Auth</span>
+              <p className="text-[13.7px] text-text-secondary leading-relaxed">Completa el login en la ventana del navegador que se abrió (o corre `higgsfield auth login` en una terminal).</p>
             </div>
             <button onClick={() => setShowLoginModal(false)} className="py-2 rounded-lg bg-white text-black text-[13.7px] font-heading font-semibold uppercase tracking-widest hover:bg-white/90 transition-colors">Listo</button>
           </div>
